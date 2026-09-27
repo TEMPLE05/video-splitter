@@ -27,9 +27,6 @@ export const setSource = (dir) => request('/api/source', json('POST', { dir }))
 
 export const createBucket = (name) => request('/api/buckets', json('POST', { name }))
 
-export const removeBucket = (id) =>
-  request('/api/buckets/' + encodeURIComponent(id), { method: 'DELETE' })
-
 export const assign = (id, bucketId) => request('/api/assign', json('POST', { id, bucketId }))
 
 export const undo = () => request('/api/undo', { method: 'POST' })
@@ -46,3 +43,5 @@ export const getPlaces = () => request('/api/places')
 
 export const deleteBucket = (id, unfile) =>
   request('/api/buckets/' + encodeURIComponent(id) + (unfile ? '?unfile=1' : ''), { method: 'DELETE' })
+
+export const clearSource = () => request('/api/source', { method: 'DELETE' })

@@ -58,6 +58,14 @@ way first. If you open the installed app on its own, it will tell you the
 server is not running and offer a Retry button rather than showing a browser
 error page.
 
+If the Install option does not appear straight away, that is the browser, not
+the app. Edge and Chrome wait until you have actually used a page before
+offering to install it. You do not have to wait: open the browser menu and pick
+Install directly.
+
+Installing needs Edge or Chrome. Firefox does not support installing desktop
+web apps. On a Mac, Safari calls it Add to Dock.
+
 The first launch installs dependencies, which is the one step that needs
 internet. After that it runs offline.
 
@@ -136,6 +144,15 @@ mouse movement or keypress brings it back.
 
 Videos start muted, because browsers block autoplay with sound until you
 interact with the page. Press `M` once and sound stays on.
+
+### Changing or clearing the folder
+
+Click the folder button in the top right to open the picker again. The folder
+currently in use is shown at the top with a **Stop** button, which unselects it
+and takes you back to an empty picker. Nothing on disk is touched, so you can
+pick it again later and your buckets will still be there.
+
+Press `Esc` to back out of the picker without changing anything.
 
 ### Removing a bucket
 

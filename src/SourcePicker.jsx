@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Back, Folder } from './icons.jsx'
-import { browse, getPlaces, setSource } from './api.js'
+import { Back, Close, Folder } from './icons.jsx'
+import { browse, clearSource, getPlaces, setSource } from './api.js'
 
 const plural = (n) => (n === 1 ? '1 video' : n + ' videos')
 
@@ -21,6 +21,25 @@ export default function SourcePicker ({ current, onPicked, onCancel }) {
   useEffect(() => {
     getPlaces().then(setPlaces).catch(() => setPlaces({ places: [], drives: [] }))
   }, [])
+
+  useEffect(() => {
+    if (!onCancel) return
+    const onKey = (e) => { if (e.key === 'Escape') onCancel() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  // Stops using the current folder and drops back to an empty picker. Only the
+  // app's own setting is cleared; nothing on disk is touched.
+  async function forget () {
+    setLoading(true)
+    try {
+      onPicked(await clearSource())
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -56,6 +75,17 @@ export default function SourcePicker ({ current, onPicked, onCancel }) {
             as subfolders inside it.
           </p>
         </header>
+
+        {current ? (
+          <div className="current">
+            <span className="current__label">Now sorting</span>
+            <span className="current__path" title={current}>{current}</span>
+            <button className="current__stop" onClick={forget} disabled={loading}
+              title="Stop using this folder">
+              <Close size={13} /> Stop
+            </button>
+          </div>
+        ) : null}
 
         <form
           className="picker__manual"

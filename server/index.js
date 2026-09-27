@@ -336,6 +336,16 @@ app.post('/api/source', wrap(async (req, res) => {
   res.json(await snapshot())
 }))
 
+// Unselects the current folder and goes back to the picker. Only the app's own
+// config is cleared; the folder, its buckets and every video stay on disk.
+app.delete('/api/source', wrap(async (_req, res) => {
+  config.sourceDir = null
+  config.buckets = []
+  history.length = 0
+  await saveConfig()
+  res.json(await snapshot())
+}))
+
 app.post('/api/buckets', wrap(async (req, res) => {
   const name = String((req.body && req.body.name) || '').trim()
   if (!name) throw httpError(400, 'A bucket name is required')
