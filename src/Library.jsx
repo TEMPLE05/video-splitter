@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Back, Scissors } from './icons.jsx'
+import ConfirmRemove from './ConfirmRemove.jsx'
+import { Back, Close, Scissors } from './icons.jsx'
 import { listBucket, videoUrl } from './api.js'
 
 function formatSize (bytes) {
@@ -59,11 +60,12 @@ function Card ({ video, onOpen }) {
   )
 }
 
-export default function Library ({ state, onOpen, onBack }) {
+export default function Library ({ state, onState, onOpen, onBack }) {
   const [bucketId, setBucketId] = useState(state.buckets[0]?.id || null)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [removing, setRemoving] = useState(null)
 
   useEffect(() => {
     if (!bucketId) {
@@ -115,14 +117,23 @@ export default function Library ({ state, onOpen, onBack }) {
         <>
           <div className="tabs">
             {state.buckets.map((b) => (
-              <button
-                key={b.id}
-                className={'bubble' + (b.id === bucketId ? ' is-on' : '')}
-                onClick={() => setBucketId(b.id)}
-              >
-                <span className="bubble__name">{b.name}</span>
-                <span className="bubble__count">{b.count}</span>
-              </button>
+              <div className="bubblewrap" key={b.id}>
+                <button
+                  className={'bubble' + (b.id === bucketId ? ' is-on' : '')}
+                  onClick={() => setBucketId(b.id)}
+                >
+                  <span className="bubble__name">{b.name}</span>
+                  <span className="bubble__count">{b.count}</span>
+                </button>
+                <button
+                  className="bubble__drop"
+                  onClick={() => setRemoving(b)}
+                  title={'Remove ' + b.name}
+                  aria-label={'Remove bucket ' + b.name}
+                >
+                  <Close size={12} />
+                </button>
+              </div>
             ))}
           </div>
 
@@ -142,6 +153,19 @@ export default function Library ({ state, onOpen, onBack }) {
           </div>
         </>
       )}
+
+      {removing ? (
+        <ConfirmRemove
+          bucket={removing}
+          onCancel={() => setRemoving(null)}
+          onDone={(next) => {
+            onState(next)
+            setRemoving(null)
+            // The open bucket may be the one that just went.
+            if (removing.id === bucketId) setBucketId(next.buckets[0]?.id || null)
+          }}
+        />
+      ) : null}
     </div>
   )
 }

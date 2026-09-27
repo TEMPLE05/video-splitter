@@ -1,6 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -134,17 +135,16 @@ async function listBuckets () {
 
   return Promise.all(
     config.buckets.map(async (b) => {
-      const dir = path.join(config.sourceDir, b.name)
-      let count = 0
-      try {
-        const files = await fsp.readdir(dir, { withFileTypes: true })
-        count = files.filter(
-          (f) => f.isFile() && VIDEO_EXT.has(path.extname(f.name).toLowerCase())
-        ).length
-      } catch {
-        count = 0
+      // The UI needs all three to decide what removing this bucket would do
+      // before it asks the user to confirm.
+      const inside = await bucketContents(path.join(config.sourceDir, b.name))
+      return {
+        id: b.id,
+        name: b.name,
+        count: inside ? inside.videos.length : 0,
+        edits: inside ? inside.edits : 0,
+        others: inside ? inside.others.length : 0
       }
-      return { id: b.id, name: b.name, count }
     })
   )
 }
@@ -209,19 +209,70 @@ app.get('/api/state', wrap(async (_req, res) => {
   res.json(await snapshot())
 }))
 
+const isVideoName = (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())
+
+async function countVideos (dir) {
+  try {
+    const entries = await fsp.readdir(dir, { withFileTypes: true })
+    return entries.filter((e) => e.isFile() && isVideoName(e.name)).length
+  } catch {
+    // Permission denied on a system folder is normal while browsing.
+    return null
+  }
+}
+
+function listDrives () {
+  const drives = []
+  for (let c = 65; c <= 90; c++) {
+    const root = String.fromCharCode(c) + ':\\'
+    if (fs.existsSync(root)) drives.push({ name: root, path: root })
+  }
+  if (drives.length === 0) drives.push({ name: '/', path: '/' })
+  return drives
+}
+
+// The places people actually keep phone transfers, so nobody has to walk down
+// from C:\ every time. OneDrive relocates Desktop and Documents, so both
+// locations are offered when both exist.
+app.get('/api/places', wrap(async (_req, res) => {
+  const home = os.homedir()
+  const oneDrive = process.env.OneDrive || process.env.OneDriveConsumer
+
+  const candidates = [
+    { label: 'Desktop', dir: path.join(home, 'Desktop') },
+    { label: 'Downloads', dir: path.join(home, 'Downloads') },
+    { label: 'Videos', dir: path.join(home, 'Videos') },
+    { label: 'Pictures', dir: path.join(home, 'Pictures') },
+    { label: 'Documents', dir: path.join(home, 'Documents') },
+    ...(oneDrive
+      ? [
+          { label: 'OneDrive Desktop', dir: path.join(oneDrive, 'Desktop') },
+          { label: 'OneDrive Documents', dir: path.join(oneDrive, 'Documents') },
+          { label: 'OneDrive Pictures', dir: path.join(oneDrive, 'Pictures') }
+        ]
+      : []),
+    { label: 'Home', dir: home }
+  ]
+
+  const seen = new Set()
+  const places = []
+  for (const c of candidates) {
+    const full = path.resolve(c.dir)
+    if (seen.has(full.toLowerCase()) || !fs.existsSync(full)) continue
+    seen.add(full.toLowerCase())
+    places.push({ label: c.label, path: full, videos: await countVideos(full) })
+  }
+
+  res.json({ places, drives: listDrives() })
+}))
+
 // Directory picker. With no dir we hand back the drive letters, because a
 // browser cannot give us a server-side folder path any other way.
 app.get('/api/browse', wrap(async (req, res) => {
   const dir = req.query.dir
 
   if (!dir) {
-    const drives = []
-    for (let c = 65; c <= 90; c++) {
-      const root = String.fromCharCode(c) + ':\\'
-      if (fs.existsSync(root)) drives.push({ name: root, path: root })
-    }
-    if (drives.length === 0) drives.push({ name: '/', path: '/' })
-    return res.json({ dir: null, parent: null, entries: drives })
+    return res.json({ dir: null, parent: null, crumbs: [], videos: 0, entries: listDrives() })
   }
 
   const full = path.resolve(String(dir))
@@ -235,10 +286,34 @@ app.get('/api/browse', wrap(async (req, res) => {
   const dirs = entries
     .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('$'))
     .map((e) => ({ name: e.name, path: path.join(full, e.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+
+  // Counting inside every subfolder is what makes the list useful: you can see
+  // where the videos are without opening each one. Capped so a folder with
+  // hundreds of children does not stall the request.
+  const SCAN_LIMIT = 60
+  await Promise.all(
+    dirs.slice(0, SCAN_LIMIT).map(async (d) => { d.videos = await countVideos(d.path) })
+  )
+
+  // Clickable breadcrumb segments, so you can jump back up several levels.
+  const crumbs = []
+  let walk = full
+  while (true) {
+    const parent = path.dirname(walk)
+    crumbs.unshift({ name: path.basename(walk) || walk, path: walk })
+    if (parent === walk) break
+    walk = parent
+  }
 
   const parent = path.dirname(full)
-  res.json({ dir: full, parent: parent === full ? null : parent, entries: dirs })
+  res.json({
+    dir: full,
+    parent: parent === full ? null : parent,
+    crumbs,
+    videos: await countVideos(full),
+    entries: dirs
+  })
 }))
 
 app.post('/api/source', wrap(async (req, res) => {
@@ -277,12 +352,89 @@ app.post('/api/buckets', wrap(async (req, res) => {
   res.json(await snapshot())
 }))
 
-// Removes the bucket from the sidebar only. The folder and the videos already
-// filed into it stay on disk, because deleting sorted work is unrecoverable.
+async function bucketContents (dir) {
+  let entries
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+  const isVideo = (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())
+  const files = entries.filter((e) => e.isFile()).map((e) => e.name)
+
+  let edits = 0
+  try {
+    const made = await fsp.readdir(path.join(dir, 'edits'), { withFileTypes: true })
+    edits = made.filter((f) => f.isFile()).length
+  } catch {
+    edits = 0
+  }
+
+  return {
+    videos: files.filter(isVideo),
+    others: files.filter((n) => !isVideo(n)),
+    edits
+  }
+}
+
+/**
+ * Removes a bucket for real.
+ *
+ * Dropping it from the config alone did nothing, because the next scan re-adopts
+ * any folder sitting in the source directory. The folder itself has to go.
+ *
+ * Nothing is deleted: videos are moved back to the source folder so they land
+ * in the queue again. Exports and unrecognised files are never touched, and a
+ * bucket holding them is refused rather than quietly emptied.
+ */
 app.delete('/api/buckets/:id', wrap(async (req, res) => {
-  config.buckets = config.buckets.filter((b) => b.id !== req.params.id)
+  const bucket = config.buckets.find((b) => b.id === req.params.id)
+  if (!bucket) throw httpError(404, 'Unknown bucket')
+
+  const dir = resolveInSource(bucket.name)
+  const inside = await bucketContents(dir)
+
+  // Folder already gone: just forget it.
+  if (!inside) {
+    config.buckets = config.buckets.filter((b) => b.id !== bucket.id)
+    await saveConfig()
+    res.json({ ...(await snapshot()), removed: bucket.name, unfiled: 0 })
+    return
+  }
+
+  if (inside.edits > 0) {
+    throw httpError(409,
+      `"${bucket.name}" holds ${inside.edits} exported clip${inside.edits === 1 ? '' : 's'} ` +
+      'in its edits folder. Move or delete those first, then remove the bucket.')
+  }
+
+  if (inside.others.length > 0) {
+    throw httpError(409,
+      `"${bucket.name}" holds files that are not videos (${inside.others.slice(0, 3).join(', ')}` +
+      `${inside.others.length > 3 ? ', …' : ''}). Move them out first, so nothing is lost.`)
+  }
+
+  if (inside.videos.length > 0 && req.query.unfile !== '1') {
+    throw httpError(409,
+      `"${bucket.name}" still holds ${inside.videos.length} video` +
+      `${inside.videos.length === 1 ? '' : 's'}.`)
+  }
+
+  for (const name of inside.videos) {
+    await moveFile(path.join(dir, name), path.join(config.sourceDir, name))
+  }
+
+  // Only an empty folder, plus possibly an empty edits folder, is left.
+  await fsp.rm(dir, { recursive: true, force: true })
+
+  config.buckets = config.buckets.filter((b) => b.id !== bucket.id)
   await saveConfig()
-  res.json(await snapshot())
+
+  res.json({
+    ...(await snapshot()),
+    removed: bucket.name,
+    unfiled: inside.videos.length
+  })
 }))
 
 app.get('/api/video/:id', wrap(async (req, res) => {

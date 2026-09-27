@@ -46,6 +46,18 @@ which it is willing to pin and which can carry a custom icon.
 Windows 11 also blocks pinning to the taskbar from a script, so that last
 right-click is yours to do. Nothing can automate it.
 
+### Installing it as an app
+
+Once it is running, open the browser menu and choose **Install Video Splitter**
+(Edge calls it "Install this site as an app"). It then gets its own window with
+no tabs or address bar, its own icon, and a proper Start menu entry that pins
+cleanly.
+
+The server still has to be running for it to do anything. Launch it the usual
+way first. If you open the installed app on its own, it will tell you the
+server is not running and offer a Retry button rather than showing a browser
+error page.
+
 The first launch installs dependencies, which is the one step that needs
 internet. After that it runs offline.
 
@@ -91,9 +103,15 @@ command again.
 
 ## Sorting
 
-Pick a source folder. Every video sitting directly in it becomes the queue.
-Create buckets, and each one is made as a real subfolder inside that source
-folder. Filing a video moves it into that subfolder.
+Pick a source folder. The picker offers shortcuts to the usual places
+(Downloads, Videos, Desktop) with a count of how many videos each holds, a
+breadcrumb you can click any level of, and a box to paste a path into. Folders
+containing videos show the count, so you can find the right one without opening
+each in turn.
+
+Every video sitting directly in that folder becomes the queue. Create buckets,
+and each one is made as a real subfolder inside it. Filing a video moves it
+into that subfolder.
 
 Because buckets are just folders, the tool picks up a layout you already have.
 Point it at a folder that already contains subfolders and those become buckets
@@ -118,6 +136,15 @@ mouse movement or keypress brings it back.
 
 Videos start muted, because browsers block autoplay with sound until you
 interact with the page. Press `M` once and sound stays on.
+
+### Removing a bucket
+
+Hover a bucket and click the small x, either on the sorting screen or on the
+library tabs. Removing is not deleting. Any videos inside move back to your
+main folder and rejoin the queue, and only the empty folder goes.
+
+A bucket holding exported clips, or files that are not videos, is refused
+outright. Move those out yourself first, so nothing can be lost by accident.
 
 ## Editing
 

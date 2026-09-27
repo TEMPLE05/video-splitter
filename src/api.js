@@ -41,3 +41,8 @@ export const listBucket = (id) => request('/api/bucket/' + encodeURIComponent(id
 export const probeVideo = (id) => request('/api/probe/' + encodeURIComponent(id))
 
 export const exportCuts = (payload) => request('/api/export', json('POST', payload))
+
+export const getPlaces = () => request('/api/places')
+
+export const deleteBucket = (id, unfile) =>
+  request('/api/buckets/' + encodeURIComponent(id) + (unfile ? '?unfile=1' : ''), { method: 'DELETE' })

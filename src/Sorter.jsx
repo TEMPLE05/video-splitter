@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
 import { Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
-import { assign, createBucket, removeBucket, undo, videoUrl } from './api.js'
+import ConfirmRemove from './ConfirmRemove.jsx'
+import { assign, createBucket, undo, videoUrl } from './api.js'
 
 function formatSize (bytes) {
   if (!bytes) return ''
@@ -32,6 +33,7 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
   const [draft, setDraft] = useState('')
   const [helpOpen, setHelpOpen] = useState(false)
   const [idle, setIdle] = useState(false)
+  const [removing, setRemoving] = useState(null)
   const playerRef = useRef(null)
   const draftRef = useRef(null)
 
@@ -121,8 +123,10 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
     })
   }
 
-  async function dropBucket (bucket) {
-    await run(async () => onState(await removeBucket(bucket.id)))
+  // An empty bucket goes straight away; anything with contents asks first,
+  // because the videos inside have to be moved back to the queue.
+  function dropBucket (bucket) {
+    setRemoving(bucket)
   }
 
   // One keydown listener for the whole screen. Filing is the primary action,
@@ -194,7 +198,7 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  const hide = idle && !helpOpen && !adding
+  const hide = idle && !helpOpen && !adding && !removing
 
   return (
     <div className="sorter">
@@ -333,6 +337,14 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
           <span>Filed into <strong>{toast.bucket}</strong></span>
           <button className="toast__undo" onClick={undoLast}>Undo</button>
         </div>
+      ) : null}
+
+      {removing ? (
+        <ConfirmRemove
+          bucket={removing}
+          onCancel={() => setRemoving(null)}
+          onDone={(next) => { onState(next); setRemoving(null); setCursor(0) }}
+        />
       ) : null}
 
       {helpOpen ? (

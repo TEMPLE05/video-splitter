@@ -123,15 +123,24 @@ kbd {
   color: var(--dim);
   text-align: center;
 }
-.boot--error code {
-  display: block;
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--bad);
-  font-size: 12px;
+.boot--error {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 24px;
+  gap: 0;
 }
-.boot__hint { color: var(--faint); font-size: 13px; }
+.boot__logo { border-radius: 14px; margin-bottom: 18px; }
+.boot__title { margin: 0 0 10px; color: var(--text); font-size: 19px; font-weight: 500; }
+.boot__text { margin: 0 0 10px; color: var(--dim); line-height: 1.6; }
+.boot__text strong { color: var(--text); font-weight: 600; }
+.boot--error .pill { margin-top: 10px; }
+.boot__detail {
+  display: block;
+  margin-top: 22px;
+  color: var(--faint);
+  font-size: 11.5px;
+  word-break: break-word;
+}
 
 /* ----------------------------------------------------------------- sorter */
 
@@ -579,7 +588,10 @@ kbd {
   display: flex;
   flex-direction: column;
   width: min(600px, 100%);
-  max-height: min(760px, 100%);
+  /* dvh, not a percentage. As a grid item inside a centred grid, max-height:
+     100% resolves against the auto-sized row, which grows with the content,
+     so the card was free to run off the bottom of the window. */
+  max-height: min(760px, calc(100dvh - 48px));
   padding: 28px;
   border: 1px solid var(--edge);
   border-radius: 24px;
@@ -1070,4 +1082,148 @@ kbd {
 
 @media (max-width: 860px) {
   .editor__panel { grid-template-columns: 1fr; max-height: 44vh; }
+}
+
+/* ================================================= folder browser (picker) */
+
+.picker__card { width: min(760px, 100%); }
+
+.browser {
+  display: grid;
+  grid-template-columns: 172px 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  margin-top: 18px;
+}
+
+.places {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.places__head {
+  margin: 10px 0 4px;
+  padding-left: 10px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+.places__head:first-child { margin-top: 0; }
+
+.place {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.place:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+.place.is-on { background: rgba(138, 180, 248, 0.16); color: #fff; }
+.place__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place__n {
+  flex: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.browser__main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.crumbs__seg { display: inline-flex; align-items: center; min-width: 0; }
+.crumbs__sep { margin: 0 1px; color: var(--faint); font-size: 12px; }
+
+.crumb {
+  max-width: 18ch;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.crumb:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.crumb.is-here { color: var(--text); font-weight: 550; }
+.crumb--up { display: grid; place-items: center; width: 26px; padding: 0; flex: none; }
+
+.listing {
+  flex: 1;
+  min-height: 190px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.entry__n {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(138, 180, 248, 0.16);
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker__foot { align-items: center; }
+.picker__here { color: var(--faint); font-size: 12.5px; }
+.picker__actions { display: flex; gap: 10px; margin-left: auto; }
+
+/* ============================================== confirm sheet for removal */
+
+.sheet__body { margin: 0 0 4px; color: var(--dim); line-height: 1.6; }
+.sheet__error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(242, 139, 130, 0.14);
+  color: var(--bad);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.sheet__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.pill--danger {
+  background: var(--bad);
+  border-color: transparent;
+  color: #3a0a06;
+  font-weight: 600;
+}
+.pill--danger:hover:not(:disabled) { background: #f7a49d; border-color: transparent; }
+
+@media (max-width: 720px) {
+  .browser { grid-template-columns: 1fr; }
+  .places { flex-direction: row; overflow-x: auto; }
+  .places__head { display: none; }
 }

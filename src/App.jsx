@@ -10,19 +10,37 @@ export default function App () {
   const [picking, setPicking] = useState(false)
   const [view, setView] = useState({ name: 'sort' })
   const [error, setError] = useState(null)
+  const [retrying, setRetrying] = useState(false)
 
-  useEffect(() => {
+  function load () {
+    setRetrying(true)
     getState()
-      .then(setState)
+      .then((next) => { setState(next); setError(null) })
       .catch((err) => setError(err.message))
-  }, [])
+      .finally(() => setRetrying(false))
+  }
 
+  useEffect(load, [])
+
+  // Reachable when the installed app is opened before the server is running,
+  // which is easy to do once it has its own icon in the Start menu.
   if (error) {
     return (
       <div className="boot boot--error">
-        <p>Cannot reach the local server.</p>
-        <code>{error}</code>
-        <p className="boot__hint">Is it running? Start it with <code>npm run dev</code>.</p>
+        <img className="boot__logo" src="/icon-192.png" alt="" width="64" height="64" />
+        <h1 className="boot__title">The app is not running yet</h1>
+        <p className="boot__text">
+          Video Splitter needs its server running on this machine before it can
+          read your videos.
+        </p>
+        <p className="boot__text">
+          Double-click <strong>Video Splitter</strong> on your desktop, wait for
+          the black window to appear, then press Retry.
+        </p>
+        <button className="pill pill--solid" onClick={load} disabled={retrying}>
+          {retrying ? 'Checking…' : 'Retry'}
+        </button>
+        <code className="boot__detail">{error}</code>
       </div>
     )
   }
@@ -53,6 +71,7 @@ export default function App () {
     return (
       <Library
         state={state}
+        onState={setState}
         onOpen={(video, bucket) => setView({ name: 'edit', video, bucket })}
         onBack={() => setView({ name: 'sort' })}
       />

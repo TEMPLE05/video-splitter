@@ -8,3 +8,13 @@ createRoot(document.getElementById('root')).render(
     <App />
   </React.StrictMode>
 )
+
+// Production only. A service worker sitting in front of the dev server would
+// serve stale modules and break hot reload.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Installability is a nicety; the app works fine without it.
+    })
+  })
+}
