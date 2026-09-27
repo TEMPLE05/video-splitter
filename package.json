@@ -1,0 +1,23 @@
+{
+  "name": "video-splitter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sort a folder of phone video saves into buckets, fast.",
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"node server/index.js\" \"vite\"",
+    "server": "node server/index.js",
+    "build": "vite build",
+    "start": "vite build && node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "vite": "^6.0.7"
+  }
+}

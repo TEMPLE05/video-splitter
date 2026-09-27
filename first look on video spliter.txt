@@ -1,0 +1,3 @@
+first look on video spliter
+i needed a way to manualy split videos from a buch of videos i had on my phone saved accross tiktok insta and X 
+so i built splitter 
