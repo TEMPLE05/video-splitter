@@ -8,21 +8,35 @@ buckets, then lets you go back into a bucket and cut the clips down.
 Nothing is uploaded anywhere. The server runs on your machine and only ever
 touches the folder you point it at.
 
-## Running it
+## Starting it
+
+Double-click **`Video Splitter.bat`**.
+
+It starts the server, waits until it is actually answering, then opens your
+browser. Leave the black window open while you work. Closing it stops the app.
+
+Double-click it again while it is already running and it just reopens the tab
+rather than complaining about a busy port.
+
+To get it onto your desktop, right-click the file, choose **Send to**, then
+**Desktop (create shortcut)**.
+
+The first launch installs dependencies, which is the one step that needs
+internet. After that it runs offline.
+
+### Running it from a terminal
 
 ```bash
-npm install
-npm run dev
+npm run dev     # API on 5174, interface on 5173, hot reload
+npm start       # build once and serve everything from 5174
 ```
 
-That starts the API on port 5174 and the interface on port 5173, and opens the
-browser. For a single-port build with no hot reload:
+### Requirements
 
-```bash
-npm start
-```
-
-Cutting needs FFmpeg on your PATH. Sorting works without it.
+- **Node.js**, from https://nodejs.org. The launcher checks for it and tells
+  you if it is missing.
+- **FFmpeg** on your PATH, only for cutting and removing audio. Sorting works
+  without it, and the launcher warns rather than refusing to start.
 
 ## Working offline
 
