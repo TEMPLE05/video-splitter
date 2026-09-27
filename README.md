@@ -8,9 +8,20 @@ buckets, then lets you go back into a bucket and cut the clips down.
 Nothing is uploaded anywhere. The server runs on your machine and only ever
 touches the folder you point it at.
 
+## Getting it
+
+```bash
+git clone https://github.com/TEMPLE05/video-splitter.git
+cd video-splitter
+```
+
+Or use the green **Code** button on GitHub and pick **Download ZIP**, then
+unzip it somewhere you can find again.
+
 ## Starting it
 
-Double-click **`Video Splitter.bat`**.
+**On Windows**, double-click **`Video Splitter.bat`**. On macOS or Linux there
+is no launcher yet, so use the terminal commands further down.
 
 It starts the server, waits until it is actually answering, then opens your
 browser. Leave the black window open while you work. Closing it stops the app.
@@ -18,25 +29,47 @@ browser. Leave the black window open while you work. Closing it stops the app.
 Double-click it again while it is already running and it just reopens the tab
 rather than complaining about a busy port.
 
-To get it onto your desktop, right-click the file, choose **Send to**, then
-**Desktop (create shortcut)**.
+### A desktop shortcut and a taskbar pin
+
+Double-click **`Create Shortcut.bat`** once. It puts a **Video Splitter**
+shortcut on your desktop with the app's own icon.
+
+To pin it, right-click that shortcut and choose **Pin to taskbar**. On Windows
+11 you may need **Show more options** first. **Pin to Start** works the same
+way.
+
+Windows will not pin a `.bat` file, and it will not pin a shortcut that points
+straight at one either. That is why the shortcut targets `cmd.exe` and passes
+the batch file as an argument: to Windows it is then a shortcut to a program,
+which it is willing to pin and which can carry a custom icon.
+
+Windows 11 also blocks pinning to the taskbar from a script, so that last
+right-click is yours to do. Nothing can automate it.
 
 The first launch installs dependencies, which is the one step that needs
 internet. After that it runs offline.
 
 ### Running it from a terminal
 
+Works on any platform, and is the only route on macOS and Linux.
+
 ```bash
-npm run dev     # API on 5174, interface on 5173, hot reload
-npm start       # build once and serve everything from 5174
+npm install     # first time only, needs internet
+npm start       # build once, then serve everything from 5174
+npm run dev     # hot reload: API on 5174, interface on 5173
 ```
+
+Then open http://127.0.0.1:5174 (or 5173 in dev).
 
 ### Requirements
 
 - **Node.js**, from https://nodejs.org. The launcher checks for it and tells
   you if it is missing.
 - **FFmpeg** on your PATH, only for cutting and removing audio. Sorting works
-  without it, and the launcher warns rather than refusing to start.
+  without it, and the launcher warns rather than refusing to start. Get it from
+  https://ffmpeg.org, or on Windows with `winget install Gyan.FFmpeg`.
+- **Windows** for the double-click launcher and the shortcut. Everything else
+  is platform independent.
 
 ## Working offline
 
