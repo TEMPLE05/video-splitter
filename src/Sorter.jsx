@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
-import { Check, Close, Folder, Help, Plus, Skip, Undo } from './icons.jsx'
+import { Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
 import { assign, createBucket, removeBucket, undo, videoUrl } from './api.js'
 
 function formatSize (bytes) {
@@ -19,10 +19,11 @@ const SHORTCUTS = [
   ['R', 'Restart the clip'],
   ['S', 'Skip, keep it in the queue'],
   ['U', 'Undo the last file'],
+  ['L', 'Open the library to edit'],
   ['?', 'This panel']
 ]
 
-export default function Sorter ({ state, onState, onChangeFolder }) {
+export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
   const [cursor, setCursor] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -178,6 +179,9 @@ export default function Sorter ({ state, onState, onChangeFolder }) {
         case 'KeyS':
           if (!atEnd) setCursor((c) => c + 1)
           break
+        case 'KeyL':
+          onLibrary()
+          break
         case 'KeyU':
           if (state.canUndo) undoLast()
           break
@@ -248,6 +252,10 @@ export default function Sorter ({ state, onState, onChangeFolder }) {
           <button className="ctl" onClick={undoLast} disabled={!state.canUndo || busy}
             title="Undo the last file (U)" aria-label="Undo">
             <Undo size={18} />
+          </button>
+          <button className="ctl" onClick={onLibrary}
+            title="Open the library to edit sorted clips (L)" aria-label="Library">
+            <Grid size={18} />
           </button>
           <button className="ctl" onClick={() => setHelpOpen(true)}
             title="Keyboard shortcuts (?)" aria-label="Shortcuts">

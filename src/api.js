@@ -35,3 +35,9 @@ export const assign = (id, bucketId) => request('/api/assign', json('POST', { id
 export const undo = () => request('/api/undo', { method: 'POST' })
 
 export const videoUrl = (id) => '/api/video/' + encodeURIComponent(id)
+
+export const listBucket = (id) => request('/api/bucket/' + encodeURIComponent(id))
+
+export const probeVideo = (id) => request('/api/probe/' + encodeURIComponent(id))
+
+export const exportCuts = (payload) => request('/api/export', json('POST', payload))

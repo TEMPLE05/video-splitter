@@ -2,6 +2,7 @@ import express from 'express'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -186,12 +187,14 @@ async function listQueue () {
 }
 
 async function snapshot () {
-  const [buckets, queue] = await Promise.all([listBuckets(), listQueue()])
+  const [buckets, queue, tools] = await Promise.all([listBuckets(), listQueue(), haveTools()])
   return {
     sourceDir: config.sourceDir,
     buckets,
     queue,
-    canUndo: history.length > 0
+    canUndo: history.length > 0,
+    // The editor is useless without FFmpeg, so the UI needs to know up front.
+    tools
   }
 }
 
@@ -360,6 +363,174 @@ app.post('/api/undo', wrap(async (_req, res) => {
     ...state,
     restored: { id: encodeId(path.basename(restored)), name: path.basename(restored) }
   })
+}))
+
+/* ------------------------------------------------------------ ffmpeg layer */
+
+// Always spawned with an argument array and never through a shell, so a
+// filename containing spaces or quotes cannot turn into extra arguments.
+function run (cmd, args) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { windowsHide: true })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.on('error', (err) => resolve({ code: -1, stdout, stderr: err.message }))
+    child.on('close', (code) => resolve({ code, stdout, stderr }))
+  })
+}
+
+let toolsReady = null
+async function haveTools () {
+  if (toolsReady !== null) return toolsReady
+  const [a, b] = await Promise.all([
+    run('ffmpeg', ['-version']),
+    run('ffprobe', ['-version'])
+  ])
+  toolsReady = a.code === 0 && b.code === 0
+  return toolsReady
+}
+
+async function probe (file) {
+  const { code, stdout } = await run('ffprobe', [
+    '-v', 'quiet',
+    '-print_format', 'json',
+    '-show_format',
+    '-show_streams',
+    file
+  ])
+  if (code !== 0) throw httpError(500, 'Could not read that video')
+
+  const info = JSON.parse(stdout)
+  const video = (info.streams || []).find((s) => s.codec_type === 'video')
+  const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
+  return {
+    duration: Number(info.format?.duration) || 0,
+    width: video?.width || 0,
+    height: video?.height || 0,
+    hasAudio: Boolean(audio),
+    vcodec: video?.codec_name || null,
+    acodec: audio?.codec_name || null
+  }
+}
+
+/* ---------------------------------------------------------- editing routes */
+
+// Videos inside one bucket. Ids encode the path relative to the source folder,
+// so the existing /api/video route streams them with no change.
+app.get('/api/bucket/:id', wrap(async (req, res) => {
+  const bucket = config.buckets.find((b) => b.id === req.params.id)
+  if (!bucket) throw httpError(404, 'Unknown bucket')
+
+  const dir = resolveInSource(bucket.name)
+  let entries = []
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    throw httpError(404, 'That bucket folder is gone')
+  }
+
+  const videos = []
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const ext = path.extname(entry.name).toLowerCase()
+    if (!VIDEO_EXT.has(ext)) continue
+    let size = 0
+    try {
+      size = (await fsp.stat(path.join(dir, entry.name))).size
+    } catch {
+      continue
+    }
+    videos.push({
+      id: encodeId(bucket.name + '/' + entry.name),
+      name: entry.name,
+      size,
+      ext,
+      playable: PLAYABLE_EXT.has(ext)
+    })
+  }
+  videos.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+
+  // Exports land in a subfolder so they never mix with the originals.
+  let edits = 0
+  try {
+    const made = await fsp.readdir(path.join(dir, 'edits'), { withFileTypes: true })
+    edits = made.filter((f) => f.isFile() && VIDEO_EXT.has(path.extname(f.name).toLowerCase())).length
+  } catch {
+    edits = 0
+  }
+
+  res.json({ bucket: { id: bucket.id, name: bucket.name }, videos, edits })
+}))
+
+app.get('/api/probe/:id', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+  const file = resolveInSource(decodeId(req.params.id))
+  if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
+  res.json(await probe(file))
+}))
+
+app.post('/api/export', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+
+  const body = req.body || {}
+  const file = resolveInSource(decodeId(String(body.id)))
+  if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
+
+  const stripAudio = Boolean(body.stripAudio)
+  const fast = body.mode === 'fast'
+  const segments = Array.isArray(body.segments) ? body.segments : []
+  if (segments.length === 0) throw httpError(400, 'Nothing to export. Keep at least one segment.')
+
+  const meta = await probe(file)
+  const clean = []
+  for (const seg of segments) {
+    const start = Math.max(0, Number(seg.start) || 0)
+    const end = Math.min(meta.duration || Number(seg.end), Number(seg.end))
+    if (!(end > start)) throw httpError(400, 'A segment ends before it starts')
+    if (end - start < 0.05) throw httpError(400, 'A segment is too short to export')
+    clean.push({ start, end })
+  }
+
+  const outDir = path.join(path.dirname(file), 'edits')
+  await fsp.mkdir(outDir, { recursive: true })
+
+  const stem = path.basename(file, path.extname(file))
+  const written = []
+
+  for (let i = 0; i < clean.length; i++) {
+    const { start, end } = clean[i]
+    const label = clean.length > 1 ? ' part ' + (i + 1) : ' cut'
+    const target = await uniquePath(path.join(outDir, stem + label + '.mp4'))
+
+    // -ss before -i seeks fast; -t then counts forward from there, which is
+    // unambiguous. Re-encoding makes the cut land on the exact frame, where a
+    // stream copy can only land on a keyframe and drifts by a second or two.
+    const args = ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(start), '-i', file, '-t', String(end - start)]
+
+    if (fast) {
+      args.push('-c', 'copy')
+      if (stripAudio) args.push('-an')
+    } else {
+      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p')
+      if (stripAudio) args.push('-an')
+      else args.push('-c:a', 'aac')
+    }
+    args.push('-movflags', '+faststart', target)
+
+    const { code, stderr } = await run('ffmpeg', args)
+    if (code !== 0) {
+      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error'))
+    }
+    let size = 0
+    try {
+      size = (await fsp.stat(target)).size
+    } catch { /* ignore */ }
+    written.push({ name: path.basename(target), size })
+  }
+
+  res.json({ written, dir: outDir })
 }))
 
 /* ----------------------------------------------------- static build, if any */

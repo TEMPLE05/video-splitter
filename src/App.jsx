@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import Sorter from './Sorter.jsx'
+import Library from './Library.jsx'
+import Editor from './Editor.jsx'
 import SourcePicker from './SourcePicker.jsx'
 import { getState } from './api.js'
 
 export default function App () {
   const [state, setState] = useState(null)
   const [picking, setPicking] = useState(false)
+  const [view, setView] = useState({ name: 'sort' })
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -26,17 +29,42 @@ export default function App () {
 
   if (!state) return <div className="boot">Loading…</div>
 
-  const needsFolder = !state.sourceDir || picking
-
-  if (needsFolder) {
+  if (!state.sourceDir || picking) {
     return (
       <SourcePicker
         current={state.sourceDir}
-        onPicked={(next) => { setState(next); setPicking(false) }}
+        onPicked={(next) => { setState(next); setPicking(false); setView({ name: 'sort' }) }}
         onCancel={state.sourceDir ? () => setPicking(false) : null}
       />
     )
   }
 
-  return <Sorter state={state} onState={setState} onChangeFolder={() => setPicking(true)} />
+  if (view.name === 'edit') {
+    return (
+      <Editor
+        video={view.video}
+        bucket={view.bucket}
+        onBack={() => setView({ name: 'library' })}
+      />
+    )
+  }
+
+  if (view.name === 'library') {
+    return (
+      <Library
+        state={state}
+        onOpen={(video, bucket) => setView({ name: 'edit', video, bucket })}
+        onBack={() => setView({ name: 'sort' })}
+      />
+    )
+  }
+
+  return (
+    <Sorter
+      state={state}
+      onState={setState}
+      onChangeFolder={() => setPicking(true)}
+      onLibrary={() => setView({ name: 'library' })}
+    />
+  )
 }
