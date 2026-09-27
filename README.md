@@ -172,8 +172,13 @@ to open it in the editor.
 The editor works on **parts**. A clip starts as one part covering the whole
 thing. Split it wherever you like, then choose which parts to keep.
 
-- **Split** at the playhead with `S` or the Split button. Each split adds a
-  cut point.
+- **Split** at the playhead with `S` or the Split button.
+- **Split at an exact time** by typing it into the Split at box, as `1:15` or
+  as plain seconds. No scrubbing needed.
+- **Split into equal parts** by entering a number and pressing Apply. A ten
+  minute video into six parts gives six clips of one minute forty each. This
+  replaces any cuts you already made, so you always get exactly the number you
+  asked for.
 - **Drag a cut point** along the timeline to move it, or type an exact
   timestamp in the list below. Both `1:23.45` and plain seconds are accepted.
 - **Drop a part** with the eye icon, or double-click it on the timeline.
@@ -182,8 +187,24 @@ thing. Split it wherever you like, then choose which parts to keep.
 - **Remove the sound** with the checkbox. This writes a silent video so you
   can lay your own audio over it.
 
-Export writes one file per kept part into an `edits` subfolder inside the
-bucket. Originals are never modified.
+### Where exports go
+
+One file per kept part, into an `edits` subfolder inside the bucket the clip
+came from. Originals are never modified, and the export panel shows the full
+path after it finishes.
+
+```
+<your folder>/
+  Clips/
+    long clip.mp4              the original, untouched
+    edits/
+      long clip part 1.mp4     the exports
+      long clip part 2.mp4
+```
+
+A single cut is named `<clip> cut.mp4`. Several parts are numbered
+`part 1`, `part 2`, and so on. Nothing is ever overwritten: a name that is
+already taken becomes `… (2).mp4`.
 
 | Key | Action |
 | --- | --- |

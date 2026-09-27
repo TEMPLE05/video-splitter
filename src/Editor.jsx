@@ -82,6 +82,10 @@ export default function Editor ({ video, bucket, onBack }) {
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
 
+  const [atTime, setAtTime] = useState('')
+  const [parts, setParts] = useState(4)
+  const [splitError, setSplitError] = useState(null)
+
   const duration = info?.duration || 0
 
   useEffect(() => {
@@ -124,6 +128,64 @@ export default function Editor ({ video, bucket, onBack }) {
     if (i < 0) return
     setCuts((cs) => [...cs.slice(0, i + 1), t, ...cs.slice(i + 1)])
     setKeep((ks) => [...ks.slice(0, i), ks[i], ks[i], ...ks.slice(i + 1)])
+    setResults(null)
+  }
+
+  // Adds a cut at a typed timestamp, so you can split at an exact point
+  // without scrubbing the playhead to it first.
+  function splitAtTyped (event) {
+    event.preventDefault()
+    const t = parseTime(atTime)
+
+    if (t === null) {
+      setSplitError('Type a time like 1:15, or just seconds')
+      return
+    }
+    if (t <= 0 || t >= duration) {
+      setSplitError('Pick a time between 0:00 and ' + formatTime(duration))
+      return
+    }
+    if (cuts.some((c) => Math.abs(c - t) < MIN_SEGMENT)) {
+      setSplitError('There is already a cut there')
+      return
+    }
+
+    const i = cuts.findIndex((c, idx) => idx < cuts.length - 1 && t > c && t < cuts[idx + 1])
+    if (i < 0) {
+      setSplitError('Cannot split there')
+      return
+    }
+
+    setCuts((cs) => [...cs.slice(0, i + 1), t, ...cs.slice(i + 1)])
+    setKeep((ks) => [...ks.slice(0, i), ks[i], ks[i], ...ks.slice(i + 1)])
+    setSplitError(null)
+    setAtTime('')
+    seek(t)
+    setResults(null)
+  }
+
+  // Replaces every cut with evenly spaced ones. Explicitly a reset rather than
+  // a subdivision, so the result is always exactly the number you asked for.
+  function splitEqually (event) {
+    event.preventDefault()
+    const n = Math.round(Number(parts))
+
+    if (!Number.isFinite(n) || n < 2 || n > 50) {
+      setSplitError('Choose between 2 and 50 parts')
+      return
+    }
+    if (!duration || duration / n < MIN_SEGMENT) {
+      setSplitError('That would make the parts too short to export')
+      return
+    }
+
+    const next = []
+    for (let i = 0; i <= n; i++) next.push((duration * i) / n)
+    next[n] = duration
+
+    setCuts(next)
+    setKeep(new Array(n).fill(true))
+    setSplitError(null)
     setResults(null)
   }
 
@@ -285,6 +347,47 @@ export default function Editor ({ video, bucket, onBack }) {
         </button>
       </div>
 
+      <div className="splitbar">
+        <form className="tool" onSubmit={splitAtTyped}>
+          <label className="tool__label" htmlFor="split-at">Split at</label>
+          <input
+            id="split-at"
+            className="tool__time"
+            value={atTime}
+            onChange={(e) => { setAtTime(e.target.value); setSplitError(null) }}
+            placeholder={duration ? '1:15' : '—'}
+            disabled={!duration}
+            spellCheck={false}
+          />
+          <button className="tool__go" type="submit" disabled={!duration || !atTime.trim()}>
+            Add cut
+          </button>
+        </form>
+
+        <span className="splitbar__or">or</span>
+
+        <form className="tool" onSubmit={splitEqually}>
+          <label className="tool__label" htmlFor="split-n">Split into</label>
+          <input
+            id="split-n"
+            className="tool__n"
+            type="number"
+            min="2"
+            max="50"
+            value={parts}
+            onChange={(e) => { setParts(e.target.value); setSplitError(null) }}
+            disabled={!duration}
+          />
+          <span className="tool__label">equal parts</span>
+          <button className="tool__go" type="submit" disabled={!duration}>
+            Apply
+          </button>
+        </form>
+
+        {splitError ? <span className="splitbar__error">{splitError}</span> : null}
+        {duration ? <span className="splitbar__len">Clip is {formatTime(duration)}</span> : null}
+      </div>
+
       {/* The track doubles as the scrub bar: click anywhere to seek, drag a
           handle to move a cut point. */}
       <div
@@ -389,7 +492,12 @@ export default function Editor ({ video, bucket, onBack }) {
 
           {results ? (
             <div className="written">
-              <p className="written__head"><Check size={14} /> Written to the edits folder</p>
+              <p className="written__head">
+                <Check size={14} /> {results.written.length} file
+                {results.written.length === 1 ? '' : 's'} written
+              </p>
+              {/* The full path, because "it went somewhere" is not an answer. */}
+              <p className="written__where" title={results.dir}>{results.dir}</p>
               <ul>
                 {results.written.map((w) => <li key={w.name}>{w.name}</li>)}
               </ul>

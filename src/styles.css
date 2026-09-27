@@ -1221,3 +1221,75 @@ kbd {
 }
 .current__stop:hover:not(:disabled) { background: var(--bad); color: #3a0a06; }
 .current__stop:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* --------------------------------------------------- split tools toolbar */
+
+.splitbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  flex: none;
+  padding: 0 16px 12px;
+}
+
+.tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 5px 5px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.tool__label { color: var(--dim); font-size: 12.5px; white-space: nowrap; }
+
+.tool__time,
+.tool__n {
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  padding: 4px 6px;
+}
+.tool__time { width: 7ch; }
+.tool__n { width: 5ch; }
+.tool__time:focus, .tool__n:focus { outline: none; border-color: var(--accent); }
+.tool__time:disabled, .tool__n:disabled { opacity: 0.4; }
+.tool__time::placeholder { color: var(--faint); }
+
+.tool__go {
+  height: 28px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tool__go:hover:not(:disabled) { background: var(--accent); color: #06203f; }
+.tool__go:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.splitbar__or { color: var(--faint); font-size: 12px; }
+.splitbar__error { color: var(--bad); font-size: 12.5px; }
+.splitbar__len { margin-left: auto; color: var(--faint); font-size: 12px; }
+
+.written__where {
+  margin: 0 0 8px;
+  color: var(--faint);
+  font-size: 11px;
+  word-break: break-all;
+  line-height: 1.45;
+}
+
+@media (max-width: 860px) {
+  .splitbar__len { display: none; }
+}

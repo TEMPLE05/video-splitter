@@ -1,3 +1,5 @@
 first look on video spliter
 i needed a way to manualy split videos from a buch of videos i had on my phone saved accross tiktok insta and X 
 so i built splitter 
+basically its just a local based web app that allows you to point at a folder on your system watch the videos that are in it and then choose where you want it to be saved 
+i have a lot of messi edits and highlights and i dont want to have to repeatedly pick one or two videos paste, come back watch more then repeate the proceess so i made this solution 
