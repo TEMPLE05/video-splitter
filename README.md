@@ -24,6 +24,24 @@ npm start
 
 Cutting needs FFmpeg on your PATH. Sorting works without it.
 
+## Working offline
+
+It runs with no internet connection. Everything is local: the server, the
+interface, your files and FFmpeg.
+
+There are no fonts, scripts or stylesheets loaded from a CDN, and the app
+never calls out to any service. Loading the page and using every screen
+produces requests only to `127.0.0.1`.
+
+The server also binds to `127.0.0.1` specifically, not `0.0.0.0`, so it is
+reachable from this machine and nothing else. Other devices on your network
+cannot see it, which also means you cannot open it from your phone.
+
+The one step that needs a connection is `npm install`, and only the first
+time. Once `node_modules` exists you can stay offline indefinitely. Delete it
+or clone the repo somewhere new and you will need to be online for that one
+command again.
+
 ## Sorting
 
 Pick a source folder. Every video sitting directly in it becomes the queue.
