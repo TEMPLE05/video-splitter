@@ -46,6 +46,17 @@ which it is willing to pin and which can carry a custom icon.
 Windows 11 also blocks pinning to the taskbar from a script, so that last
 right-click is yours to do. Nothing can automate it.
 
+### Starting it automatically
+
+The server does not survive a restart, so after shutting down your PC the app
+icon will report that it is not running. Double-click **`Start with Windows.bat`**
+once and the server starts quietly at every login from then on, with no console
+window. Run it again to turn that back off.
+
+To stop the server without rebooting, double-click **`Stop Video Splitter.bat`**.
+It only stops the process holding this app's port, so other Node programs are
+left alone.
+
 ### Installing it as an app
 
 Once it is running, open the browser menu and choose **Install Video Splitter**
@@ -92,6 +103,11 @@ Then open http://127.0.0.1:5174 (or 5173 in dev).
   is platform independent.
 
 ## Working offline
+
+**Offline does not mean always on.** The app needs no internet, but it does need
+its own server running on your machine, because a web page on its own cannot
+read your folders or run FFmpeg. Shutting down your PC stops that server, and
+nothing restarts it unless you ask it to. See "Starting it automatically" above.
 
 It runs with no internet connection. Everything is local: the server, the
 interface, your files and FFmpeg.
