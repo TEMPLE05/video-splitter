@@ -1363,3 +1363,20 @@ kbd {
   .bubble::after,
   .bubble.is-on::before { animation: none !important; }
 }
+
+/* Stepping back and forth through the queue, beside the position counter. */
+.stepper { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.stepper__btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+.stepper__btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.stepper__btn:disabled { opacity: 0.25; cursor: not-allowed; }

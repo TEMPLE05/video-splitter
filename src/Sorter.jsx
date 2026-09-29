@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
-import { Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
+import { Back, Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import { assign, createBucket, undo, videoUrl } from './api.js'
 
@@ -20,6 +20,7 @@ const SHORTCUTS = [
   ['M', 'Sound on / off'],
   ['R', 'Restart the clip'],
   ['S', 'Skip, keep it in the queue'],
+  ['B', 'Back to the video before'],
   ['U', 'Undo the last file'],
   ['L', 'Open the library to edit'],
   ['?', 'This panel']
@@ -229,6 +230,9 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
         case 'KeyS':
           if (!atEnd) setCursor((c) => c + 1)
           break
+        case 'KeyB':
+          setCursor((c) => Math.max(0, c - 1))
+          break
         case 'KeyL':
           onLibrary()
           break
@@ -290,7 +294,29 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
           {current ? (
             <>
               <span className="filename" title={current.name}>{current.name}</span>
-              <span className="filemeta">{cursor + 1} of {queue.length}</span>
+              {/* Clickable as well as keyed, since a key-only way back is easy
+                  to never discover. */}
+              <span className="stepper">
+                <button
+                  className="stepper__btn"
+                  onClick={() => setCursor((c) => Math.max(0, c - 1))}
+                  disabled={cursor === 0}
+                  title="Back to the video before (B)"
+                  aria-label="Previous video"
+                >
+                  <Back size={14} />
+                </button>
+                <span className="filemeta">{cursor + 1} of {queue.length}</span>
+                <button
+                  className="stepper__btn"
+                  onClick={() => setCursor((c) => c + 1)}
+                  disabled={cursor >= queue.length - 1}
+                  title="Skip for now (S)"
+                  aria-label="Next video"
+                >
+                  <Skip size={14} />
+                </button>
+              </span>
             </>
           ) : null}
         </div>
@@ -389,7 +415,16 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
         <ConfirmRemove
           bucket={removing}
           onCancel={() => setRemoving(null)}
-          onDone={(next) => { onState(next); setRemoving(null); setCursor(0) }}
+          onDone={(next) => {
+            // Stay on the video you were watching. Removing a bucket can push
+            // its contents back into the queue and shift every index, so the
+            // position is found again by id rather than kept as a number.
+            const watching = current?.id
+            onState(next)
+            setRemoving(null)
+            const at = watching ? next.queue.findIndex((q) => q.id === watching) : -1
+            setCursor(at >= 0 ? at : Math.min(cursor, Math.max(next.queue.length - 1, 0)))
+          }}
         />
       ) : null}
 
