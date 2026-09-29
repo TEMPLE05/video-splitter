@@ -8,7 +8,10 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
-const CONFIG_PATH = path.join(ROOT, 'videosplitter.config.json')
+// Both are overridable so a test run can boot an isolated server instead of
+// borrowing the one you have open. Sharing it meant a test could repoint your
+// source folder and rewrite your bucket list out from under you.
+const CONFIG_PATH = process.env.VIDEOSPLITTER_CONFIG || path.join(ROOT, 'videosplitter.config.json')
 const PORT = process.env.PORT || 5174
 
 // Browsers can only play a subset of what people have on disk. We still list
@@ -159,31 +162,40 @@ async function listQueue () {
     return []
   }
 
-  const files = entries.filter(
-    (e) => e.isFile() && VIDEO_EXT.has(path.extname(e.name).toLowerCase())
-  )
-
-  const out = []
-  for (const f of files) {
-    const ext = path.extname(f.name).toLowerCase()
-    let size = 0
-    try {
-      size = (await fsp.stat(path.join(config.sourceDir, f.name))).size
-    } catch {
-      // File vanished between readdir and stat. Skip it.
-      continue
-    }
-    out.push({
-      id: encodeId(f.name),
-      name: f.name,
-      size,
-      ext,
-      playable: PLAYABLE_EXT.has(ext)
+  // Deliberately no stat() per file. readdir already tells us everything the
+  // queue needs, and stat-ing each one turned a folder of a thousand clips
+  // into half a second of disk work on every single action.
+  const out = entries
+    .filter((e) => e.isFile() && VIDEO_EXT.has(path.extname(e.name).toLowerCase()))
+    .map((e) => {
+      const ext = path.extname(e.name).toLowerCase()
+      return {
+        id: encodeId(e.name),
+        name: e.name,
+        ext,
+        playable: PLAYABLE_EXT.has(ext)
+      }
     })
-  }
 
   out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
   return out
+}
+
+// One bucket's counts, for replies that only need to report what changed.
+async function bucketSummary (bucket) {
+  const inside = await bucketContents(path.join(config.sourceDir, bucket.name))
+  return {
+    id: bucket.id,
+    name: bucket.name,
+    count: inside ? inside.videos.length : 0,
+    edits: inside ? inside.edits : 0,
+    others: inside ? inside.others.length : 0
+  }
+}
+
+function queueEntry (name) {
+  const ext = path.extname(name).toLowerCase()
+  return { id: encodeId(name), name, ext, playable: PLAYABLE_EXT.has(ext) }
 }
 
 async function snapshot () {
@@ -508,8 +520,14 @@ app.post('/api/assign', wrap(async (req, res) => {
 
   history.push({ from, to, bucket: bucket.name })
 
-  const state = await snapshot()
-  res.json({ ...state, moved: { name, bucket: bucket.name } })
+  // Only what changed. Returning a full snapshot meant re-listing every bucket
+  // and the whole queue on each click, which is what made filing feel stuck on
+  // a large folder. The client removes the item and updates this one count.
+  res.json({
+    moved: { id: body.id, name, bucket: bucket.name },
+    bucket: await bucketSummary(bucket),
+    canUndo: true
+  })
 }))
 
 app.post('/api/undo', wrap(async (_req, res) => {
@@ -520,10 +538,13 @@ app.post('/api/undo', wrap(async (_req, res) => {
   }
 
   const restored = await moveFile(last.to, last.from)
-  const state = await snapshot()
+  const name = path.basename(restored)
+  const bucket = config.buckets.find((b) => b.name === last.bucket)
+
   res.json({
-    ...state,
-    restored: { id: encodeId(path.basename(restored)), name: path.basename(restored) }
+    restored: queueEntry(name),
+    bucket: bucket ? await bucketSummary(bucket) : null,
+    canUndo: history.length > 0
   })
 }))
 

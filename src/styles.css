@@ -1293,3 +1293,73 @@ kbd {
 @media (max-width: 860px) {
   .splitbar__len { display: none; }
 }
+
+/* --------------------------------------------- liquid motion on the bubbles */
+
+/* Two layers drifting at different speeds and angles. One sheen sweeping
+   across, one soft highlight wandering behind it. Separately they read as a
+   gradient sliding; together they read as something moving inside the glass. */
+.bubble { position: relative; overflow: hidden; isolation: isolate; }
+
+.bubble::before,
+.bubble::after {
+  content: '';
+  position: absolute;
+  inset: -60%;
+  z-index: -1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.35s ease;
+}
+
+.bubble::before {
+  background:
+    radial-gradient(38% 60% at 30% 40%, rgba(255, 255, 255, 0.3), transparent 70%),
+    radial-gradient(30% 50% at 70% 60%, rgba(138, 180, 248, 0.32), transparent 70%);
+  filter: blur(6px);
+}
+
+.bubble::after {
+  background: linear-gradient(
+    112deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.26) 47%,
+    rgba(255, 255, 255, 0.07) 55%,
+    transparent 68%
+  );
+}
+
+.bubble:hover:not(:disabled)::before {
+  opacity: 1;
+  animation: glass-drift 5.5s ease-in-out infinite;
+}
+.bubble:hover:not(:disabled)::after {
+  opacity: 1;
+  animation: glass-sheen 2.8s ease-in-out infinite;
+}
+
+@keyframes glass-drift {
+  0%   { transform: translate3d(-8%, -6%, 0) scale(1.05); }
+  33%  { transform: translate3d(9%, 5%, 0) scale(1.14); }
+  66%  { transform: translate3d(-4%, 8%, 0) scale(1.08); }
+  100% { transform: translate3d(-8%, -6%, 0) scale(1.05); }
+}
+
+@keyframes glass-sheen {
+  0%   { transform: translateX(-46%); }
+  55%  { transform: translateX(46%); }
+  100% { transform: translateX(-46%); }
+}
+
+/* The selected library tab keeps a slow drift even without the pointer, so the
+   current bucket is obvious at a glance. */
+.bubble.is-on::before {
+  opacity: 0.75;
+  animation: glass-drift 7s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble::before,
+  .bubble::after,
+  .bubble.is-on::before { animation: none !important; }
+}

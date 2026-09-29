@@ -4,12 +4,13 @@ import { Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import { assign, createBucket, undo, videoUrl } from './api.js'
 
-function formatSize (bytes) {
-  if (!bytes) return ''
-  const mb = bytes / (1024 * 1024)
-  if (mb < 1) return Math.round(bytes / 1024) + ' KB'
-  if (mb < 1024) return mb.toFixed(1) + ' MB'
-  return (mb / 1024).toFixed(2) + ' GB'
+// Puts an item back in the order the server sorts by, so a restored video, or
+// one whose move failed, lands where it was rather than at the end.
+function insertSorted (list, item) {
+  if (list.some((x) => x.id === item.id)) return list
+  const next = [...list, item]
+  next.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  return next
 }
 
 const SHORTCUTS = [
@@ -35,6 +36,7 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
   const [idle, setIdle] = useState(false)
   const [removing, setRemoving] = useState(null)
   const playerRef = useRef(null)
+  const inFlight = useRef(new Set())
   const draftRef = useRef(null)
 
   const queue = state.queue
@@ -90,26 +92,70 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
     }
   }
 
+  /**
+   * Files the current video without waiting for the disk.
+   *
+   * The queue entry disappears and the bucket count goes up the moment you
+   * click, then the server's real count replaces the guess when it arrives.
+   * Waiting for the round trip made filing feel broken on a big folder: the
+   * count sat still for half a second and further clicks were swallowed.
+   */
   async function fileInto (bucket) {
-    if (!current) return
-    const name = current.name
-    await run(async () => {
-      const next = await assign(current.id, bucket.id)
-      onState(next)
-      // The cursor stays put: removing this item slides the next one into the
-      // same slot, so the queue keeps flowing without a jump.
-      setToast({ name, bucket: bucket.name })
-    })
+    if (!current || inFlight.current.has(current.id)) return
+    const item = current
+    inFlight.current.add(item.id)
+
+    onState((s) => ({
+      ...s,
+      queue: s.queue.filter((q) => q.id !== item.id),
+      buckets: s.buckets.map((b) => (b.id === bucket.id ? { ...b, count: b.count + 1 } : b)),
+      canUndo: true
+    }))
+    setToast({ name: item.name, bucket: bucket.name })
+    setError(null)
+
+    try {
+      const res = await assign(item.id, bucket.id)
+      onState((s) => ({
+        ...s,
+        buckets: s.buckets.map((b) => (b.id === res.bucket.id ? res.bucket : b)),
+        canUndo: res.canUndo
+      }))
+    } catch (err) {
+      // Put it back exactly where it was, so a failed move never loses a video.
+      onState((s) => ({
+        ...s,
+        queue: insertSorted(s.queue, item),
+        buckets: s.buckets.map((b) =>
+          (b.id === bucket.id ? { ...b, count: Math.max(0, b.count - 1) } : b))
+      }))
+      setToast(null)
+      setError(err.message)
+    } finally {
+      inFlight.current.delete(item.id)
+    }
   }
 
   async function undoLast () {
-    await run(async () => {
-      const next = await undo()
-      onState(next)
+    if (!state.canUndo) return
+    setError(null)
+    try {
+      const res = await undo()
+      const rebuilt = insertSorted(queue, res.restored)
+      onState((s) => ({
+        ...s,
+        queue: insertSorted(s.queue, res.restored),
+        buckets: res.bucket
+          ? s.buckets.map((b) => (b.id === res.bucket.id ? res.bucket : b))
+          : s.buckets,
+        canUndo: res.canUndo
+      }))
       setToast(null)
-      const at = next.queue.findIndex((q) => q.id === next.restored.id)
+      const at = rebuilt.findIndex((q) => q.id === res.restored.id)
       if (at >= 0) setCursor(at)
-    })
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   async function addBucket (event) {
@@ -244,7 +290,7 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
           {current ? (
             <>
               <span className="filename" title={current.name}>{current.name}</span>
-              <span className="filemeta">{formatSize(current.size)}</span>
+              <span className="filemeta">{cursor + 1} of {queue.length}</span>
             </>
           ) : null}
         </div>
@@ -282,7 +328,7 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
             <button
               className="bubble"
               onClick={() => fileInto(bucket)}
-              disabled={!current || busy}
+              disabled={!current}
               title={'File into ' + bucket.name}
             >
               {i < 9 ? <span className="bubble__key">{i + 1}</span> : null}
