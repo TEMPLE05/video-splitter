@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ConfirmRemove from './ConfirmRemove.jsx'
-import { Back, Close, Scissors } from './icons.jsx'
-import { listBucket, videoUrl } from './api.js'
+import { Back, Check, Close, Music, Scissors } from './icons.jsx'
+import { listBucket, pullBucketAudio, videoUrl } from './api.js'
 
 function formatSize (bytes) {
   if (!bytes) return ''
@@ -66,6 +66,24 @@ export default function Library ({ state, onState, onOpen, onBack }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [removing, setRemoving] = useState(null)
+  const [grabbing, setGrabbing] = useState(false)
+  const [grabbed, setGrabbed] = useState(null)
+
+  // Pulls the whole bucket's audio in one pass. Re-running is harmless: the
+  // server skips clips whose track is already sitting in the audio folder.
+  async function grabAll () {
+    if (!bucketId || grabbing) return
+    setGrabbing(true)
+    setError(null)
+    setGrabbed(null)
+    try {
+      setGrabbed(await pullBucketAudio(bucketId))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setGrabbing(false)
+    }
+  }
 
   useEffect(() => {
     if (!bucketId) {
@@ -99,14 +117,44 @@ export default function Library ({ state, onState, onOpen, onBack }) {
           <h1 className="libbar__title">Library</h1>
         </div>
         {data ? (
-          <span className="libbar__count">
-            <strong>{data.videos.length}</strong> clip{data.videos.length === 1 ? '' : 's'}
-            {data.edits > 0 ? <span className="dot">·</span> : null}
-            {data.edits > 0 ? <strong>{data.edits}</strong> : null}
-            {data.edits > 0 ? ' exported' : null}
-          </span>
+          <div className="libbar__right">
+            <span className="libbar__count">
+              <strong>{data.videos.length}</strong> clip{data.videos.length === 1 ? '' : 's'}
+              {data.edits > 0 ? <span className="dot">·</span> : null}
+              {data.edits > 0 ? <strong>{data.edits}</strong> : null}
+              {data.edits > 0 ? ' exported' : null}
+            </span>
+            {data.videos.length > 0 ? (
+              <button
+                className="pill pill--sm"
+                onClick={grabAll}
+                disabled={grabbing}
+                title="Pull the audio from every clip here into one folder"
+              >
+                <Music size={15} />
+                {grabbing ? 'Pulling audio…' : 'Pull all audio'}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </header>
+
+      {grabbed ? (
+        <div className="grabbed">
+          <p className="grabbed__head">
+            <Check size={14} /> {grabbed.done} pulled
+            {grabbed.already > 0 ? `, ${grabbed.already} were already there` : ''}
+            {grabbed.silent > 0 ? `, ${grabbed.silent} had no sound` : ''}
+            {grabbed.failed > 0 ? `, ${grabbed.failed} failed` : ''}
+          </p>
+          <p className="grabbed__where">
+            Point any music player at this folder: <code>{grabbed.dir}</code>
+          </p>
+          <button className="grabbed__close" onClick={() => setGrabbed(null)} aria-label="Dismiss">
+            <Close size={13} />
+          </button>
+        </div>
+      ) : null}
 
       {state.buckets.length === 0 ? (
         <div className="libempty">

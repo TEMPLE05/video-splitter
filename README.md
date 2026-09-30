@@ -203,6 +203,19 @@ thing. Split it wherever you like, then choose which parts to keep.
 - **Remove the sound** with the checkbox. This writes a silent video so you
   can lay your own audio over it.
 
+### Pulling the audio out
+
+In the editor, **Pull the audio out** writes the clip's soundtrack to its own
+file in an `audio` subfolder beside the bucket. The video is not modified.
+
+**Keep quality** copies the existing audio straight out into an `.m4a`. It is
+instant and bit for bit identical, because nothing is re-encoded. **As mp3**
+converts instead, which more players accept but does lose a little quality to
+the second encode.
+
+It takes the whole clip's audio, not just the parts you kept, since the usual
+reason to pull it is to get the track itself.
+
 ### Where exports go
 
 One file per kept part, into an `edits` subfolder inside the bucket the clip

@@ -716,6 +716,108 @@ app.post('/api/export', wrap(async (req, res) => {
   res.json({ written, dir: outDir })
 }))
 
+/**
+ * Pulls the audio out of a clip into its own file.
+ *
+ * Default is a straight stream copy into .m4a: instant, and bit for bit the
+ * audio that was already in the video, with no quality lost to a second
+ * encode. Converting to .mp3 is offered because more things will play it, but
+ * it re-encodes, so it is the deliberate choice rather than the default.
+ */
+async function extractAudioTo (file, wantsMp3, { skipIfPresent = false } = {}) {
+  const meta = await probe(file)
+  if (!meta.hasAudio) return { status: 'no-audio' }
+
+  // A stream copy only works into a container that accepts the codec already
+  // there. Anything unusual falls back to mp3.
+  const copyable = meta.acodec === 'aac' || meta.acodec === 'alac'
+  const lossless = !wantsMp3 && copyable
+
+  const outDir = path.join(path.dirname(file), 'audio')
+  await fsp.mkdir(outDir, { recursive: true })
+
+  const stem = path.basename(file, path.extname(file))
+  const plain = path.join(outDir, stem + (lossless ? '.m4a' : '.mp3'))
+
+  // Batch runs skip what is already there, so doing a whole bucket twice does
+  // not leave you with two of everything.
+  if (skipIfPresent && fs.existsSync(plain)) {
+    return { status: 'already', name: path.basename(plain), dir: outDir }
+  }
+
+  const target = skipIfPresent ? plain : await uniquePath(plain)
+
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-vn', '-map', '0:a:0']
+  if (lossless) args.push('-c:a', 'copy')
+  else args.push('-c:a', 'libmp3lame', '-q:a', '2')
+  args.push(target)
+
+  const { code, stderr } = await run('ffmpeg', args)
+  if (code !== 0) {
+    return { status: 'failed', reason: stderr.trim().split('\n').pop() || 'unknown error' }
+  }
+
+  let size = 0
+  try {
+    size = (await fsp.stat(target)).size
+  } catch { /* ignore */ }
+
+  return { status: 'done', name: path.basename(target), size, lossless, dir: outDir, codec: meta.acodec }
+}
+
+app.post('/api/audio', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+
+  const body = req.body || {}
+  const file = resolveInSource(decodeId(String(body.id)))
+  if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
+
+  const out = await extractAudioTo(file, body.format === 'mp3')
+  if (out.status === 'no-audio') throw httpError(400, 'That clip has no audio track to pull')
+  if (out.status === 'failed') throw httpError(500, 'FFmpeg failed: ' + out.reason)
+
+  res.json({
+    written: { name: out.name, size: out.size },
+    dir: out.dir,
+    lossless: out.lossless,
+    codec: out.codec
+  })
+}))
+
+/**
+ * Pulls the audio from every clip in one bucket, into that bucket's audio
+ * folder. That folder is then a plain folder of tracks, so any music player,
+ * on this machine or a phone, can open it as a playlist.
+ */
+app.post('/api/bucket/:id/audio', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+
+  const bucket = config.buckets.find((b) => b.id === req.params.id)
+  if (!bucket) throw httpError(404, 'Unknown bucket')
+
+  const dir = resolveInSource(bucket.name)
+  const inside = await bucketContents(dir)
+  if (!inside) throw httpError(404, 'That bucket folder is gone')
+  if (inside.videos.length === 0) throw httpError(400, 'That bucket has no videos in it')
+
+  const wantsMp3 = (req.body || {}).format === 'mp3'
+  const tally = { done: 0, already: 0, silent: 0, failed: 0 }
+  const problems = []
+
+  for (const name of inside.videos) {
+    const out = await extractAudioTo(path.join(dir, name), wantsMp3, { skipIfPresent: true })
+    if (out.status === 'done') tally.done++
+    else if (out.status === 'already') tally.already++
+    else if (out.status === 'no-audio') tally.silent++
+    else {
+      tally.failed++
+      if (problems.length < 3) problems.push(name)
+    }
+  }
+
+  res.json({ ...tally, total: inside.videos.length, dir: path.join(dir, 'audio'), problems })
+}))
+
 /* ----------------------------------------------------- static build, if any */
 
 const DIST = path.join(ROOT, 'dist')

@@ -1312,11 +1312,23 @@ kbd {
   transition: opacity 0.35s ease;
 }
 
+/* No filter: blur() here on purpose. Blurring an element that is also being
+   animated forces the browser to redraw the blur every single frame, which
+   measured at a 15 fps loss from one drifting bubble and made the video behind
+   it stutter. The gradients fade out on their own, so the softness costs
+   nothing. Only transform is animated, which the compositor handles for free. */
 .bubble::before {
   background:
-    radial-gradient(38% 60% at 30% 40%, rgba(255, 255, 255, 0.3), transparent 70%),
-    radial-gradient(30% 50% at 70% 60%, rgba(138, 180, 248, 0.32), transparent 70%);
-  filter: blur(6px);
+    radial-gradient(42% 64% at 30% 40%, rgba(255, 255, 255, 0.26), transparent 72%),
+    radial-gradient(34% 54% at 70% 60%, rgba(138, 180, 248, 0.3), transparent 72%);
+}
+
+/* Promoted only while actually moving, so 39 idle bubbles do not each hold a
+   compositor layer. */
+.bubble:hover:not(:disabled)::before,
+.bubble:hover:not(:disabled)::after,
+.bubble.is-on::before {
+  will-change: transform;
 }
 
 .bubble::after {
@@ -1380,3 +1392,25 @@ kbd {
 }
 .stepper__btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); color: #fff; }
 .stepper__btn:disabled { opacity: 0.25; cursor: not-allowed; }
+
+/* Pulling the audio out of a clip, under the export options. */
+.pullaudio {
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.pullaudio__label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--dim);
+  font-size: 13px;
+}
+.pullaudio__row { display: flex; gap: 8px; }
+.pullaudio__note {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.pullaudio__note--good { color: var(--accent); }
+.pullaudio__note--bad { color: var(--bad); }

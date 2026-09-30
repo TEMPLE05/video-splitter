@@ -3,7 +3,7 @@ import {
   Back, Check, Close, Download, Eye, EyeOff, Pause, Play, Replay, Scissors,
   VolumeOff, VolumeOn
 } from './icons.jsx'
-import { exportCuts, probeVideo, videoUrl } from './api.js'
+import { exportCuts, probeVideo, pullAudio, videoUrl } from './api.js'
 
 const MIN_SEGMENT = 0.1
 
@@ -85,6 +85,10 @@ export default function Editor ({ video, bucket, onBack }) {
   const [atTime, setAtTime] = useState('')
   const [parts, setParts] = useState(4)
   const [splitError, setSplitError] = useState(null)
+
+  const [audioBusy, setAudioBusy] = useState(false)
+  const [audioDone, setAudioDone] = useState(null)
+  const [audioError, setAudioError] = useState(null)
 
   const duration = info?.duration || 0
 
@@ -255,6 +259,22 @@ export default function Editor ({ video, bucket, onBack }) {
       setError(err.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Pulls the whole clip's audio out, not just the kept parts: the point is
+  // usually to get the track itself, not a trimmed version of it.
+  async function grabAudio (format) {
+    if (audioBusy) return
+    setAudioBusy(true)
+    setAudioError(null)
+    setAudioDone(null)
+    try {
+      setAudioDone(await pullAudio(video.id, format))
+    } catch (err) {
+      setAudioError(err.message)
+    } finally {
+      setAudioBusy(false)
     }
   }
 
@@ -489,6 +509,41 @@ export default function Editor ({ video, bucket, onBack }) {
           </button>
 
           {error ? <p className="libnote libnote--error">{error}</p> : null}
+
+          <div className="pullaudio">
+            <span className="pullaudio__label">Pull the audio out</span>
+            <div className="pullaudio__row">
+              <button
+                className="tool__go"
+                onClick={() => grabAudio('copy')}
+                disabled={audioBusy || (info && !info.hasAudio)}
+                title="Copies the existing audio with no quality lost"
+              >
+                {audioBusy ? 'Working…' : 'Keep quality'}
+              </button>
+              <button
+                className="tool__go"
+                onClick={() => grabAudio('mp3')}
+                disabled={audioBusy || (info && !info.hasAudio)}
+                title="Re-encodes to mp3, which more things will play"
+              >
+                As mp3
+              </button>
+            </div>
+            {info && !info.hasAudio
+              ? <p className="pullaudio__note">This clip has no audio track.</p>
+              : null}
+            {audioError ? <p className="pullaudio__note pullaudio__note--bad">{audioError}</p> : null}
+            {audioDone ? (
+              <p className="pullaudio__note pullaudio__note--good">
+                {audioDone.written.name}
+                <br />
+                {audioDone.lossless
+                  ? 'Copied straight out, nothing re-encoded.'
+                  : 'Converted to mp3.'}
+              </p>
+            ) : null}
+          </div>
 
           {results ? (
             <div className="written">

@@ -133,8 +133,14 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
         </div>
       </div>
 
-      {/* Warms the next clip so filing feels instant. */}
-      {nextSrc ? <video className="preload" src={nextSrc} preload="auto" muted /> : null}
+      {/* Intended to warm the next clip, and worth knowing: it does nothing.
+          The element is display:none, and browsers skip preloading hidden media
+          whatever the attribute says. Measured both ways with a 52 MB clip
+          queued behind a small one and neither pulled a single byte. Kept at
+          metadata rather than auto so that if it is ever made visible it asks
+          for a header instead of a whole file, which would matter here because
+          the queue has full-length movies in it. */}
+      {nextSrc ? <video className="preload" src={nextSrc} preload="metadata" muted /> : null}
     </>
   )
 })

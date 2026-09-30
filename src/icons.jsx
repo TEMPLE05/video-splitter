@@ -88,6 +88,12 @@ export const EyeOff = (p) => (
   </Svg>
 )
 
+export const Music = (p) => (
+  <Svg {...p}>
+    <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6zm-2 16a2 2 0 1 1 0-4 2 2 0 0 1 0 4z" />
+  </Svg>
+)
+
 export const Grid = (p) => (
   <Svg {...p}><path d="M4 11h5V5H4v6zm0 7h5v-6H4v6zm6 0h5v-6h-5v6zm6 0h5v-6h-5v6zm-6-7h5V5h-5v6zm6-6v6h5V5h-5z" /></Svg>
 )

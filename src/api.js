@@ -45,3 +45,8 @@ export const deleteBucket = (id, unfile) =>
   request('/api/buckets/' + encodeURIComponent(id) + (unfile ? '?unfile=1' : ''), { method: 'DELETE' })
 
 export const clearSource = () => request('/api/source', { method: 'DELETE' })
+
+export const pullAudio = (id, format) => request('/api/audio', json('POST', { id, format }))
+
+export const pullBucketAudio = (bucketId, format) =>
+  request('/api/bucket/' + encodeURIComponent(bucketId) + '/audio', json('POST', { format }))
