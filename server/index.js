@@ -496,6 +496,25 @@ app.get('/api/video/:id', wrap(async (req, res) => {
   const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream'
   const range = req.headers.range
 
+  // These clips run around 20 Mbps, so a single 8 second one is 20 MB. Without
+  // a validator the browser re-pulls all of it every time you step back with B
+  // or undo a filing. The tag covers size and modified time, so an edited or
+  // replaced file still invalidates correctly.
+  const stamp = stat.mtime.toUTCString()
+  const etag = 'W/"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"'
+  res.set({
+    ETag: etag,
+    'Last-Modified': stamp,
+    'Cache-Control': 'private, max-age=3600'
+  })
+
+  const known = req.headers['if-none-match']
+  const since = req.headers['if-modified-since']
+  if (!range && ((known && known === etag) || (since && since === stamp))) {
+    res.status(304).end()
+    return
+  }
+
   // Range support is what makes the scrub bar work. Without it the browser has
   // to pull the whole clip down before it can seek.
   if (range) {
