@@ -97,6 +97,30 @@ async function uniquePath (target) {
   return candidate
 }
 
+/**
+ * Claims a free name for a file about to be written, by creating it.
+ *
+ * uniquePath only looks, so two exports started together both saw the same
+ * free name and the second overwrote the first. Creating the file with the
+ * exclusive flag is atomic: exactly one caller gets each name, and the writer
+ * then fills the empty placeholder.
+ */
+async function reservePath (target) {
+  const dir = path.dirname(target)
+  const ext = path.extname(target)
+  const stem = path.basename(target, ext)
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? target : path.join(dir, stem + ' (' + n + ')' + ext)
+    try {
+      const handle = await fsp.open(candidate, 'wx')
+      await handle.close()
+      return candidate
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err
+    }
+  }
+}
+
 // rename() fails with EXDEV across volumes, which happens the moment a bucket
 // lives on a different drive than the source. Fall back to copy + unlink.
 async function moveFile (from, to) {
@@ -715,6 +739,10 @@ async function haveTools () {
   return toolsReady
 }
 
+// Subtitle formats that are text, and so can be retimed and carried into an
+// mp4. Picture-based ones (Blu-ray PGS, DVD) cannot go into mp4 at all.
+const TEXT_SUBS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'text'])
+
 async function probe (file) {
   const { code, stdout } = await run('ffprobe', [
     '-v', 'quiet',
@@ -730,6 +758,9 @@ async function probe (file) {
   // it is not a picture track anyone can edit.
   const video = (info.streams || []).find((s) => s.codec_type === 'video' && !s.disposition?.attached_pic)
   const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
+  const subtitles = (info.streams || [])
+    .filter((s) => s.codec_type === 'subtitle')
+    .map((s) => ({ index: s.index, codec: s.codec_name, lang: s.tags?.language || null, text: TEXT_SUBS.has(s.codec_name) }))
 
   // avg_frame_rate reflects what actually plays for variable-rate phone clips;
   // r_frame_rate is the fallback when the average is missing.
@@ -747,7 +778,8 @@ async function probe (file) {
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
     vcodec: video?.codec_name || null,
-    acodec: audio?.codec_name || null
+    acodec: audio?.codec_name || null,
+    subtitles
   }
 }
 
@@ -1097,6 +1129,97 @@ app.get('/api/probe/:id', wrap(async (req, res) => {
   res.json(await probe(file))
 }))
 
+/* ---------------------------------------------------------------- subtitles */
+
+const srtTime = (t) => {
+  const ms = Math.max(0, Math.round(t * 1000))
+  const p = (n, w = 2) => String(n).padStart(w, '0')
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`
+}
+
+/** Every line of one text subtitle track, as { a, b, text } in source time. */
+async function readCues (file, index) {
+  const { code, stdout } = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file, '-map', `0:${index}`, '-f', 'srt', '-'])
+  if (code !== 0) return []
+  const toSec = (h, m, s, ms) => Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000
+  const cues = []
+  for (const block of stdout.replace(/\r/g, '').split(/\n\s*\n/)) {
+    const lines = block.split('\n')
+    const at = lines.findIndex((l) => l.includes('-->'))
+    if (at < 0) continue
+    const m = /(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)/.exec(lines[at])
+    const text = lines.slice(at + 1).join('\n').trim()
+    if (m && text) cues.push({ a: toSec(m[1], m[2], m[3], m[4]), b: toSec(m[5], m[6], m[7], m[8]), text })
+  }
+  return cues
+}
+
+/** The text subtitle tracks of a file, read once per export. */
+async function loadSubtitles (meta, file) {
+  const tracks = []
+  for (const s of (meta.subtitles || []).filter((x) => x.text).slice(0, 8)) {
+    const cues = await readCues(file, s.index)
+    if (cues.length) tracks.push({ lang: s.lang, cues })
+  }
+  return tracks
+}
+
+/**
+ * Writes each track retimed to an edit: lines inside the kept pieces move to
+ * where those pieces land in the output, lines in cut-out stretches vanish, and
+ * a line spanning a cut is clipped to it. The output seek of a fast cut does
+ * not apply to these inputs, so every edit times them from zero.
+ */
+async function writeSubtitles (tracks, pieces) {
+  const out = []
+  for (const track of tracks) {
+    const lines = []
+    let offset = 0
+    for (const { start, end } of pieces) {
+      for (const c of track.cues) {
+        const a = Math.max(c.a, start)
+        const b = Math.min(c.b, end)
+        if (b - a > 0.04) lines.push({ a: a - start + offset, b: b - start + offset, text: c.text })
+      }
+      offset += end - start
+    }
+    if (!lines.length) continue
+    lines.sort((x, y) => x.a - y.a)
+    const file = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.srt`)
+    await fsp.writeFile(file, lines.map((l, i) => `${i + 1}\n${srtTime(l.a)} --> ${srtTime(l.b)}\n${l.text}\n`).join('\n'))
+    out.push({ file, lang: track.lang })
+  }
+  return out
+}
+
+/** Adds subtitle files as inputs after `first` existing ones, mapped into mp4. */
+function subtitleArgs (subs, first) {
+  const inputs = []
+  const outputs = []
+  subs.forEach((s, j) => {
+    inputs.push('-i', s.file)
+    outputs.push('-map', `${first + j}:0`)
+    if (s.lang) outputs.push(`-metadata:s:s:${j}`, `language=${s.lang}`)
+  })
+  if (subs.length) outputs.push('-c:s', 'mov_text')
+  return { inputs, outputs }
+}
+
+/** The last keyframe at or before `t`, so a stream copy can start on it. */
+async function keyframeAtOrBefore (file, t) {
+  for (const from of [Math.max(0, t - 30), 0]) {
+    const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-skip_frame', 'nokey',
+      '-read_intervals', `${from}%${t + 0.05}`, '-show_entries', 'frame=pts_time,best_effort_timestamp_time',
+      '-of', 'csv=p=0', file])
+    const times = stdout.split(/\r?\n/)
+      .map((l) => l.split(',').map(Number).find((n) => Number.isFinite(n)))
+      .filter((n) => Number.isFinite(n) && n <= t + 0.001)
+    if (times.length) return Math.max(...times)
+    if (from === 0) break
+  }
+  return 0
+}
+
 app.post('/api/export', wrap(async (req, res) => {
   if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
 
@@ -1123,85 +1246,116 @@ app.post('/api/export', wrap(async (req, res) => {
   await fsp.mkdir(outDir, { recursive: true })
 
   const stem = path.basename(file, path.extname(file))
+  const withAudio = meta.hasAudio && !stripAudio
+  const tracks = await loadSubtitles(meta, file)
+  const temps = []
 
-  /**
-   * One finished video: every kept piece, in order, joined with the gaps
-   * closed. The way CapCut exports.
-   *
-   * Each piece is its own seeked input of the same file, so a short piece from
-   * a long episode only decodes from its nearest keyframe rather than from the
-   * start. Always re-encoded: joining stream-copied pieces glitches at every
-   * cut that is not on a keyframe, which is almost all of them.
-   */
-  if (body.join) {
-    if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
-    if (clean.length > 100) throw httpError(400, 'Too many pieces to join in one go; keep it under 100')
-
-    const withAudio = meta.hasAudio && !stripAudio
-    const target = await uniquePath(path.join(outDir, stem + ' edit.mp4'))
-    const args = ['-hide_banner', '-loglevel', 'error', '-y']
-    for (const { start, end } of clean) {
-      args.push('-ss', String(start), '-t', String(end - start), '-i', file)
-    }
-    const inputs = clean.map((_, i) => (withAudio ? `[${i}:v:0][${i}:a:0]` : `[${i}:v:0]`)).join('')
-    args.push(
-      '-filter_complex', `${inputs}concat=n=${clean.length}:v=1:a=${withAudio ? 1 : 0}[v]${withAudio ? '[a]' : ''}`,
-      '-map', '[v]'
-    )
-    if (withAudio) args.push('-map', '[a]', '-c:a', 'aac')
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart', target)
-
-    const { code, stderr } = await run('ffmpeg', args)
-    if (code !== 0) {
-      // Never leave a half-written file behind looking like a finished one.
-      await fsp.rm(target, { force: true })
-      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error'))
-    }
-    let size = 0
-    try {
-      size = (await fsp.stat(target)).size
-    } catch { /* ignore */ }
-    res.json({ written: [{ name: path.basename(target), size }], dir: outDir, joined: true })
-    return
+  const fail = async (target, stderr, extra = '') => {
+    // Never leave a half-written file behind looking like a finished one.
+    await fsp.rm(target, { force: true })
+    throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error') + extra)
+  }
+  const sizeOf = async (f) => {
+    try { return (await fsp.stat(f)).size } catch { return 0 }
   }
 
-  const written = []
+  try {
+    /**
+     * One finished video: every kept piece, in order, joined with the gaps
+     * closed. The way CapCut exports.
+     *
+     * Each piece is its own seeked input of the same file, so a short piece
+     * from a long episode only decodes from its nearest keyframe rather than
+     * from the start. Always re-encoded: joining stream-copied pieces glitches
+     * at every cut that is not on a keyframe, which is almost all of them.
+     */
+    if (body.join) {
+      if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
+      if (clean.length > 100) throw httpError(400, 'Too many pieces to join in one go; keep it under 100')
 
-  for (let i = 0; i < clean.length; i++) {
-    const { start, end } = clean[i]
-    const label = clean.length > 1 ? ' part ' + (i + 1) : ' cut'
-    const target = await uniquePath(path.join(outDir, stem + label + '.mp4'))
+      const subs = await writeSubtitles(tracks, clean)
+      temps.push(...subs.map((s) => s.file))
+      const sub = subtitleArgs(subs, clean.length)
 
-    // -ss before -i seeks fast; -t then counts forward from there, which is
-    // unambiguous. Re-encoding makes the cut land on the exact frame, where a
-    // stream copy can only land on a keyframe and drifts by a second or two.
-    const args = ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(start), '-i', file, '-t', String(end - start)]
+      const target = await reservePath(path.join(outDir, stem + ' edit.mp4'))
+      const args = ['-hide_banner', '-loglevel', 'error', '-y']
+      for (const { start, end } of clean) {
+        args.push('-ss', String(start), '-t', String(end - start), '-i', file)
+      }
+      args.push(...sub.inputs)
+      const inputs = clean.map((_, i) => (withAudio ? `[${i}:v:0][${i}:a:0]` : `[${i}:v:0]`)).join('')
+      args.push(
+        '-filter_complex', `${inputs}concat=n=${clean.length}:v=1:a=${withAudio ? 1 : 0}[v]${withAudio ? '[a]' : ''}`,
+        '-map', '[v]'
+      )
+      if (withAudio) args.push('-map', '[a]', '-c:a', 'aac')
+      args.push(...sub.outputs)
+      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', target)
 
-    if (fast) {
-      args.push('-c', 'copy')
-      if (stripAudio) args.push('-an')
-    } else {
-      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p')
-      if (stripAudio) args.push('-an')
-      else args.push('-c:a', 'aac')
+      const { code, stderr } = await run('ffmpeg', args)
+      if (code !== 0) await fail(target, stderr)
+      res.json({
+        written: [{ name: path.basename(target), size: await sizeOf(target) }],
+        dir: outDir,
+        joined: true,
+        subtitles: subs.length
+      })
+      return
     }
-    args.push('-movflags', '+faststart', target)
 
-    const { code, stderr } = await run('ffmpeg', args)
-    if (code !== 0) {
-      await fsp.rm(target, { force: true })
-      const done = written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : ''
-      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error') + done)
+    const written = []
+    for (let i = 0; i < clean.length; i++) {
+      const { start, end } = clean[i]
+      const label = clean.length > 1 ? ' part ' + (i + 1) : ' cut'
+      const target = await reservePath(path.join(outDir, stem + label + '.mp4'))
+      const args = ['-hide_banner', '-loglevel', 'error', '-y']
+      let from = start
+      let subs
+
+      if (fast) {
+        // A stream copy can only begin on a keyframe. It used to seek on the
+        // input, which kept the footage back to the previous keyframe hidden
+        // inside the file behind an edit list: most players skipped it, some
+        // showed it, and a 2 second cut could weigh 6 seconds. Now the cut
+        // starts on that keyframe openly, the output seek drops everything
+        // before it, and the reply says where it really starts.
+        from = await keyframeAtOrBefore(file, start)
+        const seekIn = Math.max(0, from - 0.5)
+        const skip = from - seekIn
+        subs = await writeSubtitles(tracks, [{ start: from, end }])
+        const sub = subtitleArgs(subs, 1)
+        args.push('-ss', String(seekIn), '-i', file, ...sub.inputs,
+          '-ss', String(skip), '-t', String(end - from),
+          '-map', '0:v:0')
+        if (withAudio) args.push('-map', '0:a:0')
+        args.push(...sub.outputs, '-c:v', 'copy', '-c:a', 'copy')
+        if (subs.length) args.push('-c:s', 'mov_text')
+      } else {
+        // -ss before -i seeks fast, and when re-encoding it is also exact.
+        subs = await writeSubtitles(tracks, [{ start, end }])
+        const sub = subtitleArgs(subs, 1)
+        args.push('-ss', String(start), '-i', file, ...sub.inputs, '-t', String(end - start), '-map', '0:v:0')
+        if (withAudio) args.push('-map', '0:a:0')
+        args.push(...sub.outputs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p')
+        if (withAudio) args.push('-c:a', 'aac')
+      }
+      temps.push(...subs.map((s) => s.file))
+      args.push('-movflags', '+faststart', target)
+
+      const { code, stderr } = await run('ffmpeg', args)
+      if (code !== 0) {
+        await fail(target, stderr, written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : '')
+      }
+      const entry = { name: path.basename(target), size: await sizeOf(target) }
+      if (fast) Object.assign(entry, { asked: start, startedAt: Math.round(from * 1000) / 1000 })
+      written.push(entry)
     }
-    let size = 0
-    try {
-      size = (await fsp.stat(target)).size
-    } catch { /* ignore */ }
-    written.push({ name: path.basename(target), size })
+
+    res.json({ written, dir: outDir, subtitles: tracks.length })
+  } finally {
+    await Promise.all(temps.map((f) => fsp.rm(f, { force: true })))
   }
-
-  res.json({ written, dir: outDir })
 }))
 
 /**
@@ -1233,7 +1387,7 @@ async function extractAudioTo (file, wantsMp3, { skipIfPresent = false } = {}) {
     return { status: 'already', name: path.basename(plain), dir: outDir }
   }
 
-  const target = skipIfPresent ? plain : await uniquePath(plain)
+  const target = skipIfPresent ? plain : await reservePath(plain)
 
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', file, '-vn', '-map', '0:a:0']
   if (lossless) args.push('-c:a', 'copy')
@@ -1242,6 +1396,7 @@ async function extractAudioTo (file, wantsMp3, { skipIfPresent = false } = {}) {
 
   const { code, stderr } = await run('ffmpeg', args)
   if (code !== 0) {
+    await fsp.rm(target, { force: true })
     return { status: 'failed', reason: stderr.trim().split('\n').pop() || 'unknown error' }
   }
 

@@ -281,9 +281,18 @@ Exports re-encode, which makes every cut land on the exact frame you chose. It
 takes a few seconds for a short clip.
 
 When exporting separate parts, a "fast cut" option stream-copies instead. It is
-close to instant, but a stream copy can only start on a keyframe, so a part can
-begin a few seconds before the point you chose. One finished video is always
-re-encoded, since joining stream-copied pieces glitches at every cut.
+close to instant, but a stream copy can only start on a keyframe, so each part
+starts on the keyframe at or before the point you chose. The export window says
+exactly where each part really starts. The file holds only what plays: no
+hidden footage before the start. One finished video is always re-encoded,
+since joining stream-copied pieces glitches at every cut.
+
+Text subtitles (SRT, ASS, WebVTT) are kept, retimed to the edit: lines in
+pieces you cut out disappear, and the rest move with their pieces. Picture
+subtitles from Blu-ray or DVD rips cannot go into an mp4 and are left out.
+
+Two exports started at the same moment never overwrite each other; the second
+gets a `(2)` name.
 
 ## Safety
 

@@ -514,7 +514,21 @@ function Written ({ result }) {
       </p>
       {/* The full path, because "it went somewhere" is not an answer. */}
       <p className="written__where" title={result.dir}>{result.dir}</p>
-      <ul>{list.map((w) => <li key={w.name}>{w.name}</li>)}</ul>
+      <ul>
+        {list.map((w) => (
+          <li key={w.name}>
+            {w.name}
+            {/* A fast cut can only start on a keyframe; say so rather than
+                leave the extra seconds as a surprise. */}
+            {w.startedAt !== undefined && w.asked - w.startedAt > 0.01 ? (
+              <em className="written__early">
+                starts at {formatClock(w.startedAt, true)}, {(w.asked - w.startedAt).toFixed(1)} s before your cut, on the nearest keyframe
+              </em>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {result.subtitles > 0 ? <p className="written__note">Subtitles kept, timed to the edit.</p> : null}
     </div>
   )
 }
@@ -586,7 +600,7 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
             <input type="checkbox" checked={fast} onChange={(e) => setFast(e.target.checked)} disabled={busy} />
             <span>
               Fast cut, no re-encode
-              <em>Near instant, but each part can only start on a keyframe, so it may begin a few seconds early.</em>
+              <em>Near instant, but each part can only start on a keyframe, so it may begin a few seconds early. You will be told exactly where.</em>
             </span>
           </label>
         ) : null}
