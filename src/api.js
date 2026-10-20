@@ -55,3 +55,8 @@ export const bucketContents = (id) => request('/api/buckets/' + encodeURICompone
 
 export const pullBucketAudio = (bucketId, format) =>
   request('/api/bucket/' + encodeURIComponent(bucketId) + '/audio', json('POST', { format }))
+
+// Editor timeline: a filmstrip of frames across the clip, and its loudness.
+export const getStrip = (id) => request('/api/strip/' + encodeURIComponent(id))
+
+export const getWave = (id) => request('/api/wave/' + encodeURIComponent(id))

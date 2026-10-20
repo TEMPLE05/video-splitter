@@ -726,12 +726,25 @@ async function probe (file) {
   if (code !== 0) throw httpError(500, 'Could not read that video')
 
   const info = JSON.parse(stdout)
-  const video = (info.streams || []).find((s) => s.codec_type === 'video')
+  // Album art embedded in an audio file shows up as a one-frame "video" stream;
+  // it is not a picture track anyone can edit.
+  const video = (info.streams || []).find((s) => s.codec_type === 'video' && !s.disposition?.attached_pic)
   const audio = (info.streams || []).find((s) => s.codec_type === 'audio')
+
+  // avg_frame_rate reflects what actually plays for variable-rate phone clips;
+  // r_frame_rate is the fallback when the average is missing.
+  const rate = (s) => {
+    const [n, d] = String(s || '').split('/').map(Number)
+    return n > 0 && d > 0 ? n / d : 0
+  }
+  const fps = rate(video?.avg_frame_rate) || rate(video?.r_frame_rate) || 30
+
   return {
     duration: Number(info.format?.duration) || 0,
     width: video?.width || 0,
     height: video?.height || 0,
+    fps: Math.min(Math.max(fps, 1), 240),
+    hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
     vcodec: video?.codec_name || null,
     acodec: audio?.codec_name || null
@@ -902,6 +915,181 @@ app.get('/api/thumb/:id', wrap(async (req, res) => {
   sendStream(fs.createReadStream(out), res)
 }))
 
+/* ------------------------------------------------- editor strip and waveform */
+
+const STRIP_DIR = path.join(CACHE_DIR, 'strips')
+const WAVE_DIR = path.join(CACHE_DIR, 'waves')
+const STRIP_H = 72
+const STRIP_COLS = 20
+const STRIP_MAX = 240
+const WAVE_RATE = 50
+
+// Both decode whole files, so they get their own small pool and never crowd
+// out the thumbnail renders the library depends on.
+const heavySlot = limiter(2)
+const heavyInFlight = new Map()
+
+function cacheKey (kind, file, st) {
+  return crypto.createHash('sha1').update(kind + '|' + file + '|' + st.size + '|' + st.mtimeMs).digest('hex')
+}
+
+/** Builds once, shares the build between simultaneous callers, keeps it on disk. */
+async function cachedJson (dir, key, build) {
+  const file = path.join(dir, key.slice(0, 2), key + '.json')
+  try {
+    return JSON.parse(await fsp.readFile(file, 'utf8'))
+  } catch { /* not built yet */ }
+
+  let job = heavyInFlight.get(key)
+  if (!job) {
+    job = heavySlot(async () => {
+      const value = await build()
+      await fsp.mkdir(path.dirname(file), { recursive: true })
+      await fsp.writeFile(file, JSON.stringify(value))
+      return value
+    }).finally(() => heavyInFlight.delete(key))
+    heavyInFlight.set(key, job)
+  }
+  return job
+}
+
+/**
+ * A strip of frames across a whole clip, tiled into one image, plus the time
+ * each frame was taken at.
+ *
+ * Short clips are cheap to decode, so they get two frames a second. Long ones
+ * decode keyframes only, which skips nearly all the work: a nine-minute episode
+ * takes under two seconds this way. The frames are spaced out so no clip
+ * produces more than STRIP_MAX of them.
+ */
+async function buildStrip (file, key) {
+  const meta = await probe(file)
+  if (!meta.hasVideo || !(meta.duration > 0)) return { none: true }
+
+  const out = path.join(STRIP_DIR, key.slice(0, 2), key + '.jpg')
+  await fsp.mkdir(path.dirname(out), { recursive: true })
+  const tmp = out.replace(/\.jpg$/, `.${process.pid}.${Date.now()}.tmp.jpg`)
+
+  const short = meta.duration <= 120
+  const expected = short ? Math.ceil(meta.duration * 2) + 2 : STRIP_MAX + 2
+  const rows = Math.max(1, Math.ceil(expected / STRIP_COLS))
+  const interval = meta.duration / STRIP_MAX
+
+  // showinfo reports each frame's timestamp as it is tiled, so the times come
+  // from the frames actually used rather than from an estimate.
+  const pick = short
+    ? 'fps=2'
+    : `select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,${interval.toFixed(3)})'`
+  const args = [
+    '-hide_banner', '-loglevel', 'info', '-y',
+    ...(short ? [] : ['-skip_frame', 'nokey']),
+    '-i', file, '-an', '-sn',
+    '-vf', `${pick},scale=-2:${STRIP_H},showinfo,tile=${STRIP_COLS}x${rows}`,
+    '-frames:v', '1', '-update', '1', '-q:v', '5', tmp
+  ]
+  const { code, stderr } = await run('ffmpeg', args)
+
+  const lines = stderr.split(/\r?\n/).filter((l) => l.includes('Parsed_showinfo') && l.includes('pts_time:'))
+  const times = lines.map((l) => Number(/pts_time:\s*([-\d.]+)/.exec(l)?.[1])).filter(Number.isFinite)
+  const size = /\ss:(\d+)x(\d+)/.exec(lines[0] || '')
+
+  let made = false
+  try {
+    made = code === 0 && (await fsp.stat(tmp)).size > 0
+  } catch {
+    made = false
+  }
+  if (!made || !times.length || !size) {
+    await fsp.rm(tmp, { force: true })
+    return { none: true }
+  }
+  await fsp.rename(tmp, out)
+
+  return {
+    cols: STRIP_COLS,
+    rows,
+    frameW: Number(size[1]),
+    frameH: Number(size[2]),
+    // Never more cells than the tile holds, in case a final frame spilled over.
+    times: times.slice(0, STRIP_COLS * rows)
+  }
+}
+
+/** Peak loudness, WAVE_RATE values per second, each squeezed into one byte. */
+function buildWave (file, hasAudio) {
+  if (!hasAudio) return Promise.resolve({ rate: WAVE_RATE, hasAudio: false, peaks: '' })
+  const SR = 4000
+  const per = SR / WAVE_RATE
+  return new Promise((resolve) => {
+    const p = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', file,
+      '-vn', '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'], { windowsHide: true })
+    const peaks = []
+    let carry = Buffer.alloc(0)
+    let count = 0
+    let peak = 0
+    p.stdout.on('data', (chunk) => {
+      const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk
+      const usable = buf.length - (buf.length % 2)
+      for (let i = 0; i < usable; i += 2) {
+        const v = Math.abs(buf.readInt16LE(i))
+        if (v > peak) peak = v
+        if (++count === per) {
+          peaks.push(peak)
+          peak = 0
+          count = 0
+        }
+      }
+      carry = buf.subarray(usable)
+    })
+    p.on('error', () => resolve({ rate: WAVE_RATE, hasAudio: false, peaks: '' }))
+    p.on('close', () => {
+      if (count) peaks.push(peak)
+      // Square root so quiet speech still shows, rather than only the loud bits.
+      const bytes = Uint8Array.from(peaks, (v) => Math.min(255, Math.round(Math.sqrt(v / 32768) * 255)))
+      resolve({ rate: WAVE_RATE, hasAudio: true, peaks: Buffer.from(bytes).toString('base64') })
+    })
+  })
+}
+
+async function statSource (id) {
+  const file = resolveInSource(decodeId(id))
+  try {
+    return { file, st: await fsp.stat(file) }
+  } catch {
+    throw httpError(404, 'That video is no longer there')
+  }
+}
+
+app.get('/api/strip/:id', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+  const { file, st } = await statSource(req.params.id)
+  const key = cacheKey('strip-v1', file, st)
+  const manifest = await cachedJson(STRIP_DIR, key, () => buildStrip(file, key))
+  res.set('Cache-Control', 'private, max-age=3600')
+  res.json(manifest.none ? manifest : { ...manifest, image: `/api/strip/${req.params.id}/image?k=${key}` })
+}))
+
+app.get('/api/strip/:id/image', wrap(async (req, res) => {
+  const { file, st } = await statSource(req.params.id)
+  const key = cacheKey('strip-v1', file, st)
+  const out = path.join(STRIP_DIR, key.slice(0, 2), key + '.jpg')
+  if (!fs.existsSync(out)) throw httpError(404, 'Strip not built yet')
+  // The key is in the URL, so a changed file gets a different address and
+  // this one can be cached for good.
+  res.set('Cache-Control', 'private, max-age=31536000, immutable')
+  res.type('image/jpeg')
+  sendStream(fs.createReadStream(out), res)
+}))
+
+app.get('/api/wave/:id', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+  const { file, st } = await statSource(req.params.id)
+  const key = cacheKey('wave-v1', file, st)
+  const wave = await cachedJson(WAVE_DIR, key, async () => buildWave(file, (await probe(file)).hasAudio))
+  res.set('Cache-Control', 'private, max-age=3600')
+  res.json(wave)
+}))
+
 app.get('/api/probe/:id', wrap(async (req, res) => {
   if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
   const file = resolveInSource(decodeId(req.params.id))
@@ -935,6 +1123,49 @@ app.post('/api/export', wrap(async (req, res) => {
   await fsp.mkdir(outDir, { recursive: true })
 
   const stem = path.basename(file, path.extname(file))
+
+  /**
+   * One finished video: every kept piece, in order, joined with the gaps
+   * closed. The way CapCut exports.
+   *
+   * Each piece is its own seeked input of the same file, so a short piece from
+   * a long episode only decodes from its nearest keyframe rather than from the
+   * start. Always re-encoded: joining stream-copied pieces glitches at every
+   * cut that is not on a keyframe, which is almost all of them.
+   */
+  if (body.join) {
+    if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
+    if (clean.length > 100) throw httpError(400, 'Too many pieces to join in one go; keep it under 100')
+
+    const withAudio = meta.hasAudio && !stripAudio
+    const target = await uniquePath(path.join(outDir, stem + ' edit.mp4'))
+    const args = ['-hide_banner', '-loglevel', 'error', '-y']
+    for (const { start, end } of clean) {
+      args.push('-ss', String(start), '-t', String(end - start), '-i', file)
+    }
+    const inputs = clean.map((_, i) => (withAudio ? `[${i}:v:0][${i}:a:0]` : `[${i}:v:0]`)).join('')
+    args.push(
+      '-filter_complex', `${inputs}concat=n=${clean.length}:v=1:a=${withAudio ? 1 : 0}[v]${withAudio ? '[a]' : ''}`,
+      '-map', '[v]'
+    )
+    if (withAudio) args.push('-map', '[a]', '-c:a', 'aac')
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart', target)
+
+    const { code, stderr } = await run('ffmpeg', args)
+    if (code !== 0) {
+      // Never leave a half-written file behind looking like a finished one.
+      await fsp.rm(target, { force: true })
+      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error'))
+    }
+    let size = 0
+    try {
+      size = (await fsp.stat(target)).size
+    } catch { /* ignore */ }
+    res.json({ written: [{ name: path.basename(target), size }], dir: outDir, joined: true })
+    return
+  }
+
   const written = []
 
   for (let i = 0; i < clean.length; i++) {
@@ -959,7 +1190,9 @@ app.post('/api/export', wrap(async (req, res) => {
 
     const { code, stderr } = await run('ffmpeg', args)
     if (code !== 0) {
-      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error'))
+      await fsp.rm(target, { force: true })
+      const done = written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : ''
+      throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error') + done)
     }
     let size = 0
     try {

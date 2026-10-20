@@ -201,75 +201,89 @@ next to the app, never inside your own folders. The first visit to a folder
 makes them as you look, a few at a time; after that they appear instantly. Only
 three load at once, so the rest of the app stays responsive while they do.
 
-The editor works on **parts**. A clip starts as one part covering the whole
-thing. Split it wherever you like, then choose which parts to keep.
+The editor is laid out like CapCut on a phone: the picture on top, the timeline
+under it, the tools along the bottom. The playhead stays in the middle and the
+clip slides underneath it, shown as a strip of its own frames with its sound
+drawn as a waveform below.
 
-- **Split** at the playhead with `S` or the Split button.
-- **Split at an exact time** by typing it into the Split at box, as `1:15` or
-  as plain seconds. No scrubbing needed.
-- **Split into equal parts** by entering a number and pressing Apply. A ten
-  minute video into six parts gives six clips of one minute forty each. This
-  replaces any cuts you already made, so you always get exactly the number you
-  asked for.
-- **Drag a cut point** along the timeline to move it, or type an exact
-  timestamp in the list below. Both `1:23.45` and plain seconds are accepted.
-- **Drop a part** with the eye icon, or double-click it on the timeline.
-  Dropped parts stay visible so you can bring them back.
-- **Merge** two parts by removing the cut between them.
-- **Remove the sound** with the checkbox. This writes a silent video so you
-  can lay your own audio over it.
+The edit is a row of **pieces**. A clip starts as one piece covering the whole
+thing. What you see playing is exactly what the export will be: deleted pieces
+are skipped, and the gap they leave closes up.
+
+- **Scrub** by dragging the timeline left or right, or with the mouse wheel.
+  `Ctrl` + wheel, or the `−` and `+` buttons, zoom in and out. Click the time
+  ruler to jump.
+- **Split** cuts the piece under the playhead in two, with `S` or the Split
+  button. It cuts on the frame you are looking at, even while playing.
+- **Split at…** takes a typed time, as `1:15` or as plain seconds. The time is
+  a position on the timeline, so it matches the clock beside the play button.
+- **Select** a piece by clicking it. It gets a white frame with a handle at
+  each end. **Drag a handle** to trim that end; the preview shows the frame you
+  are trimming to. **Delete** removes the selected piece.
+- **Undo** and **redo** cover every change, a hundred steps back.
+- **Sound on / off** turns the clip's own sound off, for the preview and the
+  export, so you can lay your own audio over it.
+
+### One video or separate parts
+
+**Export** makes one finished video by default: every piece, in order, joined
+into `<clip> edit.mp4`.
+
+**Into parts** cuts the clip into any number of equal pieces, say five, and
+switches the export to **separate parts**, one file per piece. A ten minute
+video into five parts gives five two-minute files. If you had already made
+cuts, it starts again from the whole clip; undo brings your cuts back. You can
+switch between one video and separate parts in the export window at any time.
 
 ### Pulling the audio out
 
-In the editor, **Pull the audio out** writes the clip's soundtrack to its own
-file in an `audio` subfolder beside the bucket. The video is not modified.
+**Extract audio** writes the clip's whole soundtrack to its own file in an
+`audio` subfolder beside the bucket. The video is not modified.
 
 **Keep quality** copies the existing audio straight out into an `.m4a`. It is
 instant and bit for bit identical, because nothing is re-encoded. **As mp3**
 converts instead, which more players accept but does lose a little quality to
-the second encode.
-
-It takes the whole clip's audio, not just the parts you kept, since the usual
-reason to pull it is to get the track itself.
+the second encode. A whole bucket can be done at once from its library page.
 
 ### Where exports go
 
-One file per kept part, into an `edits` subfolder inside the bucket the clip
-came from. Originals are never modified, and the export panel shows the full
-path after it finishes.
+Into an `edits` subfolder inside the bucket the clip came from. Originals are
+never modified, and the export window shows the full path after it finishes.
 
 ```
 <your folder>/
   Clips/
     long clip.mp4              the original, untouched
     edits/
-      long clip part 1.mp4     the exports
+      long clip edit.mp4       one finished video
+      long clip part 1.mp4     or one file per piece
       long clip part 2.mp4
 ```
 
-A single cut is named `<clip> cut.mp4`. Several parts are numbered
-`part 1`, `part 2`, and so on. Nothing is ever overwritten: a name that is
-already taken becomes `… (2).mp4`.
+Nothing is ever overwritten: a name that is already taken becomes `… (2).mp4`.
 
 | Key | Action |
 | --- | --- |
 | `Space` | Play / pause |
-| `←` `→` | Seek 1 second, hold `Shift` for 0.1 |
-| `S` | Split at the playhead |
-| `K` | Keep or drop the part under the playhead |
-| `M` | Sound on / off |
-| `R` | Back to the start |
-| `Esc` | Back to the library |
+| `S` or `Ctrl`+`B` | Split at the playhead |
+| `Delete` | Delete the selected piece |
+| `Ctrl`+`Z` | Undo |
+| `Ctrl`+`Shift`+`Z` or `Ctrl`+`Y` | Redo |
+| `←` `→` | One frame back or forward, hold `Shift` for a second |
+| `Home` `End` | Start or end of the edit |
+| `+` `−` | Zoom in or out |
+| `M` | Mute the preview only |
+| `Esc` | Deselect, then back to the library |
 
 ### Accurate versus fast
 
-Exports re-encode by default, which makes every cut land on the exact frame
-you chose. It takes a few seconds for a short clip.
+Exports re-encode, which makes every cut land on the exact frame you chose. It
+takes a few seconds for a short clip.
 
-The "fast cut" option stream-copies instead. It is close to instant, but a
-stream copy can only cut on keyframes, so the result can drift a second or two
-from where you put the marker. On a 15 second clip that is a tenth of the video
-in the wrong place, which is why it is not the default.
+When exporting separate parts, a "fast cut" option stream-copies instead. It is
+close to instant, but a stream copy can only start on a keyframe, so a part can
+begin a few seconds before the point you chose. One finished video is always
+re-encoded, since joining stream-copied pieces glitches at every cut.
 
 ## Safety
 
@@ -294,8 +308,9 @@ a preview, because browsers cannot decode them.
 `videosplitter.config.json` is written next to `package.json` and holds the
 source folder and bucket list. Delete it to start clean. It is gitignored.
 
-`.cache/thumbs` holds the library's thumbnails. It is safe to delete at any
-time; they are simply made again as you browse. It is gitignored too.
+`.cache` holds the library's thumbnails and the editor's frame strips and
+waveforms. It is safe to delete at any time; they are simply made again as
+needed. It is gitignored too.
 
 ## Still to come
 
@@ -317,7 +332,10 @@ src/Player.jsx        Video stage and transport for sorting
 src/Library.jsx       Folder page and clip grid, File Explorer style
 src/Thumb.jsx         Thumbnail loader, capped at three requests at once
 src/ConfirmRemove.jsx Checks a bucket's contents before allowing removal
-src/Editor.jsx        Splitting, part selection and export
+src/Editor.jsx        The editor screen, its tools and the export window
+src/editor/model.js   The edit as a list of pieces, and the operations on it
+src/editor/Timeline.jsx  Canvas timeline: frames, waveform, trimming, scrubbing
+src/editor/usePlayback.js  Plays the edit, swapping between two videos at cuts
 src/SourcePicker.jsx  Server-side folder browser
 src/icons.jsx         Inline SVG icon set
 src/api.js            Fetch wrappers

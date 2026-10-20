@@ -1,308 +1,273 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import Timeline from './editor/Timeline.jsx'
+import usePlayback from './editor/usePlayback.js'
 import {
-  Back, Check, Close, Download, Eye, EyeOff, Pause, Play, Replay, Scissors,
+  formatClock, initial, parseClock, removePiece, splitAt, splitEvenly, total as totalOf, trimPiece
+} from './editor/model.js'
+import {
+  Back, Check, Download, Grid, Minus, Music, Pause, Play, Plus, Redo, Scissors, Timer, Trash, Undo,
   VolumeOff, VolumeOn
 } from './icons.jsx'
-import { exportCuts, probeVideo, pullAudio, videoUrl } from './api.js'
+import { exportCuts, getStrip, getWave, probeVideo, pullAudio, videoUrl } from './api.js'
 
-const MIN_SEGMENT = 0.1
+const MIN_PIECE = 0.1
+const MAX_PPS = 400
+const HISTORY = 100
 
-export function formatTime (seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '0:00.00'
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return m + ':' + (s < 10 ? '0' : '') + s.toFixed(2)
+function decodePeaks (b64) {
+  const bin = atob(b64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
-/** Accepts "1:23.45", "83.45" or "83". Returns null if it makes no sense. */
-export function parseTime (text) {
-  const raw = String(text).trim()
-  if (!raw) return null
-  if (raw.includes(':')) {
-    const bits = raw.split(':')
-    if (bits.length !== 2) return null
-    const m = Number(bits[0])
-    const s = Number(bits[1])
-    if (!Number.isFinite(m) || !Number.isFinite(s) || s < 0 || s >= 60) return null
-    return m * 60 + s
-  }
-  const n = Number(raw)
-  return Number.isFinite(n) && n >= 0 ? n : null
-}
-
-/** An editable m:ss.ms field that only commits a value it could parse. */
-function TimeField ({ value, onCommit, disabled }) {
-  const [draft, setDraft] = useState(null)
-  const shown = draft === null ? formatTime(value) : draft
-
-  function commit () {
-    if (draft === null) return
-    const parsed = parseTime(draft)
-    setDraft(null)
-    if (parsed !== null) onCommit(parsed)
-  }
-
-  return (
-    <input
-      className="timefield"
-      value={shown}
-      disabled={disabled}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() }
-        if (e.key === 'Escape') { setDraft(null); e.currentTarget.blur() }
-      }}
-      aria-label="Time"
-      spellCheck={false}
-    />
-  )
-}
-
+/**
+ * The editor, laid out like CapCut on a phone: the picture on top, the
+ * timeline under it with the playhead fixed in the middle, the tools along the
+ * bottom.
+ *
+ * The edit is a list of pieces of the clip. Split cuts the piece under the
+ * playhead in two, Delete removes the selected piece and closes the gap, and
+ * the handles on a selected piece trim it. Export makes one finished video by
+ * default; "Into parts" switches it to one file per piece.
+ */
 export default function Editor ({ video, bucket, onBack }) {
-  const videoRef = useRef(null)
-  const timelineRef = useRef(null)
-
   const [info, setInfo] = useState(null)
   const [loadError, setLoadError] = useState(null)
 
-  // Contiguous boundaries, so segments can never overlap or leave a gap.
-  // cuts has one more entry than keep: cuts[i]..cuts[i+1] is segment i.
-  const [cuts, setCuts] = useState([0, 0])
-  const [keep, setKeep] = useState([true])
+  // Undo history. present is the edit; draft is a trim still being dragged.
+  const [hist, setHist] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
 
-  const [time, setTime] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [muted, setMuted] = useState(true)
-  const [dragging, setDragging] = useState(null)
+  const [strip, setStrip] = useState(null)
+  const [stripImg, setStripImg] = useState(null)
+  const [wave, setWave] = useState(null)
 
-  const [stripAudio, setStripAudio] = useState(false)
-  const [mode, setMode] = useState('accurate')
-  const [busy, setBusy] = useState(false)
-  const [results, setResults] = useState(null)
-  const [error, setError] = useState(null)
+  const [width, setWidth] = useState(0)
+  const [zoom, setZoom] = useState(null)
+  const [previewMuted, setPreviewMuted] = useState(false)
+  const [soundOff, setSoundOff] = useState(false)
+  const [outMode, setOutMode] = useState('join')
+  const [panel, setPanel] = useState(null)
+  const [sheet, setSheet] = useState(null)
+  const [note, setNote] = useState(null)
+  const noteTimer = useRef(0)
+  const trimBase = useRef(null)
 
-  const [atTime, setAtTime] = useState('')
-  const [parts, setParts] = useState(4)
-  const [splitError, setSplitError] = useState(null)
-
-  const [audioBusy, setAudioBusy] = useState(false)
-  const [audioDone, setAudioDone] = useState(null)
-  const [audioError, setAudioError] = useState(null)
-
+  const pieces = draft ?? hist?.present ?? []
+  const total = totalOf(pieces)
+  const fps = info?.fps || 30
+  const frame = 1 / fps
   const duration = info?.duration || 0
+
+  const pb = usePlayback(pieces, hist?.present, fps, previewMuted || soundOff)
 
   useEffect(() => {
     let cancelled = false
     probeVideo(video.id)
       .then((d) => {
         if (cancelled) return
+        if (!d.hasVideo) throw new Error('This file has no picture to edit.')
+        if (!(d.duration > 0)) throw new Error('Could not read how long this clip is.')
         setInfo(d)
-        setCuts([0, d.duration])
-        setKeep([true])
+        setHist({ past: [], present: initial(d.duration), future: [] })
       })
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
-    return () => { cancelled = true }
+
+    // The strip and the waveform decode the whole file the first time, which
+    // takes a second or two on an episode, so the editor opens without them.
+    getStrip(video.id)
+      .then((s) => {
+        if (cancelled) return
+        setStrip(s)
+        if (s.none) return
+        const img = new Image()
+        img.onload = () => { if (!cancelled) setStripImg(img) }
+        img.src = s.image
+      })
+      .catch(() => { if (!cancelled) setStrip({ none: true }) })
+    getWave(video.id)
+      .then((w) => {
+        if (cancelled) return
+        setWave({ rate: w.rate, peaks: w.hasAudio && w.peaks ? decodePeaks(w.peaks) : null })
+      })
+      .catch(() => { if (!cancelled) setWave({ rate: 50, peaks: null }) })
+
+    return () => { cancelled = true; clearTimeout(noteTimer.current) }
   }, [video.id])
 
-  const segments = keep.map((k, i) => ({ index: i, start: cuts[i], end: cuts[i + 1], keep: k }))
-  const kept = segments.filter((s) => s.keep)
-  const keptLength = kept.reduce((sum, s) => sum + (s.end - s.start), 0)
-
-  const segmentAt = (t) => segments.findIndex((s) => t >= s.start && t < s.end)
-
-  function seek (to) {
-    const v = videoRef.current
-    if (!v || !duration) return
-    const next = Math.min(Math.max(to, 0), duration)
-    v.currentTime = next
-    setTime(next)
+  function flash (text) {
+    setNote(text)
+    clearTimeout(noteTimer.current)
+    noteTimer.current = setTimeout(() => setNote(null), 4000)
   }
 
-  function togglePlay () {
-    const v = videoRef.current
-    if (!v) return
-    if (v.paused) v.play().catch(() => {})
-    else v.pause()
+  /* ------------------------------------------------------------ history */
+
+  function commit (next) {
+    if (!next) return false
+    setHist((h) => ({ past: [...h.past, h.present].slice(-HISTORY), present: next, future: [] }))
+    return true
   }
 
-  function splitHere () {
-    const t = time
-    const i = cuts.findIndex((c, idx) => idx < cuts.length - 1 && t > c + MIN_SEGMENT && t < cuts[idx + 1] - MIN_SEGMENT)
-    if (i < 0) return
-    setCuts((cs) => [...cs.slice(0, i + 1), t, ...cs.slice(i + 1)])
-    setKeep((ks) => [...ks.slice(0, i), ks[i], ks[i], ...ks.slice(i + 1)])
-    setResults(null)
+  function undo () {
+    if (!hist?.past.length) return
+    setHist((h) => ({ past: h.past.slice(0, -1), present: h.past[h.past.length - 1], future: [h.present, ...h.future] }))
   }
 
-  // Adds a cut at a typed timestamp, so you can split at an exact point
-  // without scrubbing the playhead to it first.
-  function splitAtTyped (event) {
-    event.preventDefault()
-    const t = parseTime(atTime)
+  function redo () {
+    if (!hist?.future.length) return
+    setHist((h) => ({ past: [...h.past, h.present], present: h.future[0], future: h.future.slice(1) }))
+  }
 
-    if (t === null) {
-      setSplitError('Type a time like 1:15, or just seconds')
+  /* -------------------------------------------------------------- zoom */
+
+  // Fully zoomed out, the whole clip fits in the right half, starting at the
+  // playhead, as it does when CapCut opens one. Measured against the clip, not
+  // the edit, so trimming never rescales the timeline under the pointer.
+  const fitPps = width && duration ? Math.min(MAX_PPS, (width * 0.45) / duration) : 1
+  const pps = Math.min(Math.max(zoom ?? fitPps, fitPps), MAX_PPS)
+  const zoomBy = (f) => setZoom(Math.min(Math.max(pps * f, fitPps), MAX_PPS))
+
+  /* ----------------------------------------------------------- editing */
+
+  const clampT = (T) => Math.min(Math.max(T, 0), total)
+  const selected = pieces.find((p) => p.id === selectedId) || null
+  const selectedIndex = selected ? pieces.indexOf(selected) : -1
+
+  function split () {
+    // The live position, not the last rendered one: while playing, the
+    // rendered time trails the picture by up to a frame of the UI loop.
+    const T = pb.now()
+    pb.pause(T)
+    const next = splitAt(pieces, T, MIN_PIECE)
+    if (!next) {
+      flash('Too close to a cut or an end to split here')
       return
     }
-    if (t <= 0 || t >= duration) {
-      setSplitError('Pick a time between 0:00 and ' + formatTime(duration))
+    commit(next)
+    setSelectedId(null)
+  }
+
+  function deleteSelected () {
+    if (!selected) {
+      flash('Tap a piece on the timeline first, then delete it')
       return
     }
-    if (cuts.some((c) => Math.abs(c - t) < MIN_SEGMENT)) {
-      setSplitError('There is already a cut there')
+    const next = removePiece(pieces, selected.id)
+    if (!next) {
+      flash('The last piece cannot be deleted')
+      return
+    }
+    commit(next)
+    setSelectedId(null)
+  }
+
+  function onTrim ({ id, edge, to, phase }) {
+    if (phase === 'start') {
+      pb.pause()
+      trimBase.current = { list: pieces, t: pb.now() }
+      setSelectedId(id)
+      return
+    }
+    const base = trimBase.current
+    if (!base) return
+    const next = trimPiece(base.list, id, edge, to, duration, MIN_PIECE)
+    const before = base.list.find((p) => p.id === id)
+    const after = next.find((p) => p.id === id)
+
+    if (phase === 'move') {
+      setDraft(next)
+      // Pulling the left edge keeps the frames where they are and moves the
+      // edge, so the handle stays under the pointer. Everything after a right
+      // edge ripples along live.
+      if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
+      pb.peek(edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
       return
     }
 
-    const i = cuts.findIndex((c, idx) => idx < cuts.length - 1 && t > c && t < cuts[idx + 1])
-    if (i < 0) {
-      setSplitError('Cannot split there')
+    trimBase.current = null
+    setDraft(null)
+    if (phase === 'cancel' || (after.start === before.start && after.end === before.end)) {
+      pb.seek(base.t, base.list)
       return
     }
-
-    setCuts((cs) => [...cs.slice(0, i + 1), t, ...cs.slice(i + 1)])
-    setKeep((ks) => [...ks.slice(0, i), ks[i], ks[i], ...ks.slice(i + 1)])
-    setSplitError(null)
-    setAtTime('')
-    seek(t)
-    setResults(null)
+    if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
+    commit(next)
   }
 
-  // Replaces every cut with evenly spaced ones. Explicitly a reset rather than
-  // a subdivision, so the result is always exactly the number you asked for.
-  function splitEqually (event) {
-    event.preventDefault()
-    const n = Math.round(Number(parts))
-
-    if (!Number.isFinite(n) || n < 2 || n > 50) {
-      setSplitError('Choose between 2 and 50 parts')
-      return
-    }
-    if (!duration || duration / n < MIN_SEGMENT) {
-      setSplitError('That would make the parts too short to export')
-      return
-    }
-
-    const next = []
-    for (let i = 0; i <= n; i++) next.push((duration * i) / n)
-    next[n] = duration
-
-    setCuts(next)
-    setKeep(new Array(n).fill(true))
-    setSplitError(null)
-    setResults(null)
+  function splitAtTyped (text) {
+    const T = parseClock(text)
+    if (T === null) return 'Type a time like 1:15, or just seconds'
+    if (T <= 0 || T >= total) return 'Pick a time between 00:00 and ' + formatClock(total, true)
+    const next = splitAt(pieces, T, MIN_PIECE)
+    if (!next) return 'There is already a cut right there'
+    pb.seek(T)
+    commit(next)
+    setSelectedId(null)
+    flash('Split at ' + formatClock(T, true))
+    return null
   }
 
-  function toggleKeep (index) {
-    setKeep((ks) => ks.map((k, i) => (i === index ? !k : k)))
-    setResults(null)
+  function splitIntoParts (n) {
+    if (!Number.isInteger(n) || n < 2 || n > 100) return 'Choose between 2 and 100 parts'
+    const next = splitEvenly(pieces, n, duration, MIN_PIECE)
+    if (!next) return 'Those parts would be too short'
+    commit(next)
+    setSelectedId(null)
+    setOutMode('parts')
+    flash(`Cut into ${n} equal parts. Export will save ${n} separate files.`)
+    return null
   }
 
-  // Dropping a boundary merges the two segments it separated. The earlier
-  // segment's keep state wins, which is what the eye icons already showed.
-  function removeBoundary (i) {
-    if (i <= 0 || i >= cuts.length - 1) return
-    setCuts((cs) => cs.filter((_, idx) => idx !== i))
-    setKeep((ks) => ks.filter((_, idx) => idx !== i))
-    setResults(null)
-  }
-
-  function moveBoundary (i, to) {
-    if (i <= 0 || i >= cuts.length - 1) return
-    setCuts((cs) => {
-      const low = cs[i - 1] + MIN_SEGMENT
-      const high = cs[i + 1] - MIN_SEGMENT
-      if (high <= low) return cs
-      const next = [...cs]
-      next[i] = Math.min(Math.max(to, low), high)
-      return next
-    })
-    setResults(null)
-  }
-
-  const timeFromEvent = useCallback((event) => {
-    const el = timelineRef.current
-    if (!el || !duration) return 0
-    const rect = el.getBoundingClientRect()
-    const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1)
-    return ratio * duration
-  }, [duration])
-
-  // Dragging is tracked on the window so the pointer can leave the track
-  // mid-drag without the handle sticking.
-  useEffect(() => {
-    if (dragging === null) return
-    const onMove = (e) => moveBoundary(dragging, timeFromEvent(e))
-    const onUp = () => setDragging(null)
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-    }
-  }, [dragging, timeFromEvent])
-
-  async function doExport () {
-    if (kept.length === 0 || busy) return
-    setBusy(true)
-    setError(null)
-    setResults(null)
-    try {
-      const out = await exportCuts({
-        id: video.id,
-        segments: kept.map((s) => ({ start: s.start, end: s.end })),
-        stripAudio,
-        mode
-      })
-      setResults(out)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  // Pulls the whole clip's audio out, not just the kept parts: the point is
-  // usually to get the track itself, not a trimmed version of it.
-  async function grabAudio (format) {
-    if (audioBusy) return
-    setAudioBusy(true)
-    setAudioError(null)
-    setAudioDone(null)
-    try {
-      setAudioDone(await pullAudio(video.id, format))
-    } catch (err) {
-      setAudioError(err.message)
-    } finally {
-      setAudioBusy(false)
-    }
-  }
+  /* -------------------------------------------------------------- keys */
 
   useEffect(() => {
-    function onKey (event) {
-      const tag = event.target.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target.isContentEditable) return
-      if (event.metaKey || event.ctrlKey || event.altKey) return
+    function onKey (e) {
+      if (sheet) return
+      const tag = e.target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return
+      // Leaving works at any moment, including while the clip is still
+      // opening or after it failed to.
+      if (!hist) {
+        if (e.code === 'Escape') onBack()
+        return
+      }
+      const ctrl = e.ctrlKey || e.metaKey
 
-      switch (event.code) {
-        case 'Escape': onBack(); break
-        case 'Space': event.preventDefault(); togglePlay(); break
-        case 'ArrowLeft': event.preventDefault(); seek(time - (event.shiftKey ? 0.1 : 1)); break
-        case 'ArrowRight': event.preventDefault(); seek(time + (event.shiftKey ? 0.1 : 1)); break
-        case 'KeyS': event.preventDefault(); splitHere(); break
-        case 'KeyK': {
-          const i = segmentAt(time)
-          if (i >= 0) toggleKeep(i)
+      if (ctrl && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
+      if (ctrl && e.code === 'KeyY') { e.preventDefault(); redo(); return }
+      if (ctrl && e.code === 'KeyB') { e.preventDefault(); split(); return }
+      if (ctrl || e.altKey) return
+
+      switch (e.code) {
+        case 'Space': e.preventDefault(); pb.toggle(); break
+        case 'KeyS': e.preventDefault(); split(); break
+        case 'Delete':
+        case 'Backspace': e.preventDefault(); deleteSelected(); break
+        case 'ArrowLeft': e.preventDefault(); pb.seek(clampT(pb.now() - (e.shiftKey ? 1 : frame))); break
+        case 'ArrowRight': e.preventDefault(); pb.seek(clampT(pb.now() + (e.shiftKey ? 1 : frame))); break
+        case 'Home': e.preventDefault(); pb.seek(0); break
+        case 'End': e.preventDefault(); pb.seek(total); break
+        case 'Equal':
+        case 'NumpadAdd': zoomBy(1.5); break
+        case 'Minus':
+        case 'NumpadSubtract': zoomBy(1 / 1.5); break
+        case 'KeyM': setPreviewMuted((m) => !m); break
+        case 'Escape':
+          if (panel) setPanel(null)
+          else if (selectedId) setSelectedId(null)
+          else onBack()
           break
-        }
-        case 'KeyM': setMuted((m) => !m); break
-        case 'KeyR': seek(0); break
         default: break
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
+
+  /* ------------------------------------------------------------ render */
 
   if (loadError) {
     return (
@@ -313,15 +278,16 @@ export default function Editor ({ video, bucket, onBack }) {
             <h1 className="libbar__title">{video.name}</h1>
           </div>
         </header>
-        <p className="libnote libnote--error">{loadError}</p>
+        <p className="libnote libnote--error ed__error">{loadError}</p>
       </div>
     )
   }
 
-  const playheadPercent = duration ? (time / duration) * 100 : 0
+  const outputs = outMode === 'join' ? 1 : pieces.length
+  const outLabel = outMode === 'join' ? '1 video' : `${outputs} file${outputs === 1 ? '' : 's'}`
 
   return (
-    <div className="editor">
+    <div className="editor" data-pieces={pieces.length}>
       <header className="libbar">
         <div className="libbar__left">
           <button className="ctl" onClick={onBack} title="Back to library (Esc)" aria-label="Back">
@@ -330,234 +296,362 @@ export default function Editor ({ video, bucket, onBack }) {
           <h1 className="libbar__title" title={video.name}>{video.name}</h1>
           <span className="libbar__crumb">{bucket.name}</span>
         </div>
-        <span className="libbar__count">
-          {info ? `${info.width}×${info.height}` : ''}
-          {info && !info.hasAudio ? <span className="dot">·</span> : null}
-          {info && !info.hasAudio ? 'no audio track' : null}
-        </span>
+        <div className="libbar__right">
+          <button className="ctl" onClick={undo} disabled={!hist?.past.length} title="Undo (Ctrl+Z)" aria-label="Undo">
+            <Undo size={18} />
+          </button>
+          <button className="ctl" onClick={redo} disabled={!hist?.future.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+            <Redo size={18} />
+          </button>
+          <button className="pill pill--solid ed__export" onClick={() => { pb.pause(); setSheet('export') }} disabled={!hist}>
+            <Download size={16} /> Export <span className="ed__export-n">{outLabel}</span>
+          </button>
+        </div>
       </header>
 
-      <div className="editor__stage">
-        <video
-          ref={videoRef}
-          className="editor__video"
-          src={videoUrl(video.id)}
-          muted={muted}
-          playsInline
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onTimeUpdate={(e) => !dragging && setTime(e.currentTarget.currentTime)}
-          onClick={togglePlay}
-        />
+      <div className="ed__stage" onClick={() => hist && pb.toggle()}>
+        {[pb.aRef, pb.bRef].map((ref, k) => (
+          <video
+            key={k}
+            ref={ref}
+            className={'ed__video' + (pb.front === k ? ' is-front' : '')}
+            src={videoUrl(video.id)}
+            preload="auto"
+            playsInline
+            muted
+          />
+        ))}
+        {!hist ? <span className="ed__loading">Opening…</span> : null}
       </div>
 
-      <div className="editor__controls">
-        <button className="ctl" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
-          {playing ? <Pause /> : <Play />}
+      <div className="ed__transport">
+        <button className="ctl" onClick={pb.toggle} disabled={!hist} aria-label={pb.playing ? 'Pause' : 'Play'} title="Play or pause (Space)">
+          {pb.playing ? <Pause /> : <Play />}
         </button>
-        <button className="ctl" onClick={() => seek(0)} aria-label="Restart"><Replay size={18} /></button>
-        <button className="ctl" onClick={() => setMuted((m) => !m)} aria-label={muted ? 'Unmute' : 'Mute'}>
-          {muted ? <VolumeOff size={18} /> : <VolumeOn size={18} />}
-        </button>
-        <span className="clock">
-          {formatTime(time)} <span className="clock__sep">/</span> {formatTime(duration)}
+        <span className="clock ed__clock">
+          {formatClock(pb.t, true)} <span className="clock__sep">/</span> {formatClock(total, true)}
         </span>
-        <button className="pill pill--solid pill--sm" onClick={splitHere} disabled={!duration}>
-          <Scissors size={15} /> Split here <kbd>S</kbd>
-        </button>
-      </div>
-
-      <div className="splitbar">
-        <form className="tool" onSubmit={splitAtTyped}>
-          <label className="tool__label" htmlFor="split-at">Split at</label>
-          <input
-            id="split-at"
-            className="tool__time"
-            value={atTime}
-            onChange={(e) => { setAtTime(e.target.value); setSplitError(null) }}
-            placeholder={duration ? '1:15' : '—'}
-            disabled={!duration}
-            spellCheck={false}
-          />
-          <button className="tool__go" type="submit" disabled={!duration || !atTime.trim()}>
-            Add cut
+        <span className="ed__status" aria-live="polite">
+          {note ?? (selected
+            ? `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim`
+            : pieces.length > 1 ? `${pieces.length} pieces` : '')}
+        </span>
+        <div className="ed__transport-right">
+          <button
+            className="ctl"
+            onClick={() => setPreviewMuted((m) => !m)}
+            title={soundOff ? 'The clip sound is off for the export' : 'Mute the preview (M)'}
+            aria-label={previewMuted ? 'Unmute preview' : 'Mute preview'}
+            disabled={soundOff}
+          >
+            {previewMuted || soundOff ? <VolumeOff size={18} /> : <VolumeOn size={18} />}
           </button>
-        </form>
-
-        <span className="splitbar__or">or</span>
-
-        <form className="tool" onSubmit={splitEqually}>
-          <label className="tool__label" htmlFor="split-n">Split into</label>
-          <input
-            id="split-n"
-            className="tool__n"
-            type="number"
-            min="2"
-            max="50"
-            value={parts}
-            onChange={(e) => { setParts(e.target.value); setSplitError(null) }}
-            disabled={!duration}
-          />
-          <span className="tool__label">equal parts</span>
-          <button className="tool__go" type="submit" disabled={!duration}>
-            Apply
+          <button className="ctl" onClick={() => zoomBy(1 / 1.5)} disabled={pps <= fitPps + 1e-9} title="Zoom out (−)" aria-label="Zoom out">
+            <Minus size={18} />
           </button>
-        </form>
-
-        {splitError ? <span className="splitbar__error">{splitError}</span> : null}
-        {duration ? <span className="splitbar__len">Clip is {formatTime(duration)}</span> : null}
+          <button className="ctl" onClick={() => zoomBy(1.5)} disabled={pps >= MAX_PPS} title="Zoom in (+)" aria-label="Zoom in">
+            <Plus size={18} />
+          </button>
+        </div>
       </div>
 
-      {/* The track doubles as the scrub bar: click anywhere to seek, drag a
-          handle to move a cut point. */}
-      <div
-        className="track"
-        ref={timelineRef}
-        onPointerDown={(e) => {
-          if (e.target.closest('.track__handle')) return
-          seek(timeFromEvent(e))
-        }}
-      >
-        {segments.map((s) => (
-          <div
-            key={s.index}
-            className={'track__seg' + (s.keep ? '' : ' is-dropped')}
-            style={{ left: (s.start / duration) * 100 + '%', width: ((s.end - s.start) / duration) * 100 + '%' }}
-            onDoubleClick={(e) => { e.stopPropagation(); toggleKeep(s.index) }}
-            title={s.keep ? 'Double-click to drop' : 'Double-click to keep'}
-          />
-        ))}
+      <Timeline
+        pieces={pieces}
+        t={pb.t}
+        pps={pps}
+        strip={strip}
+        stripImg={stripImg}
+        peaks={wave ? wave.peaks : undefined}
+        waveRate={wave?.rate || 50}
+        soundOff={soundOff}
+        selectedId={selectedId}
+        onWidth={setWidth}
+        onSeek={(T) => pb.seek(clampT(T))}
+        onSelect={(id) => { setSelectedId(id); if (id) setNote(null) }}
+        onTrim={onTrim}
+        onZoom={zoomBy}
+      />
 
-        {cuts.slice(1, -1).map((c, i) => (
-          <div
-            key={i}
-            className={'track__handle' + (dragging === i + 1 ? ' is-dragging' : '')}
-            style={{ left: (c / duration) * 100 + '%' }}
-            onPointerDown={(e) => { e.stopPropagation(); setDragging(i + 1) }}
-            title="Drag to move this cut"
-          />
-        ))}
+      {panel === 'at' ? (
+        <TypedSplit total={total} onSubmit={splitAtTyped} onClose={() => setPanel(null)} />
+      ) : null}
+      {panel === 'parts' ? (
+        <PartsSplit
+          replacing={pieces.length > 1}
+          total={pieces.length > 1 ? duration : total}
+          onSubmit={splitIntoParts}
+          onClose={() => setPanel(null)}
+        />
+      ) : null}
 
-        <div className="track__playhead" style={{ left: playheadPercent + '%' }} />
-      </div>
+      <nav className="ed__tools" aria-label="Editing tools">
+        <Tool icon={<Scissors />} label="Split" hint="S" onClick={split} disabled={!hist} />
+        <Tool icon={<Trash />} label="Delete" hint="Del" onClick={deleteSelected} disabled={!selected || pieces.length < 2} />
+        <Tool icon={<Timer />} label="Split at…" onClick={() => setPanel((p) => (p === 'at' ? null : 'at'))} on={panel === 'at'} disabled={!hist} />
+        <Tool icon={<Grid />} label="Into parts" onClick={() => setPanel((p) => (p === 'parts' ? null : 'parts'))} on={panel === 'parts'} disabled={!hist} />
+        <Tool
+          icon={soundOff ? <VolumeOff /> : <VolumeOn />}
+          label={soundOff ? 'Sound off' : 'Sound on'}
+          onClick={() => setSoundOff((s) => !s)}
+          on={soundOff}
+          disabled={!info || !info.hasAudio}
+          title={info && !info.hasAudio ? 'This clip has no sound' : 'Turn the clip sound off for the export, so you can add your own'}
+        />
+        <Tool icon={<Music />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} />
+      </nav>
 
-      <div className="editor__panel">
-        <ol className="seglist">
-          {segments.map((s) => (
-            <li key={s.index} className={'seg' + (s.keep ? '' : ' is-dropped')}>
-              <button
-                className="seg__eye"
-                onClick={() => toggleKeep(s.index)}
-                title={s.keep ? 'Drop this part' : 'Keep this part'}
-                aria-label={s.keep ? 'Drop part ' + (s.index + 1) : 'Keep part ' + (s.index + 1)}
-              >
-                {s.keep ? <Eye size={16} /> : <EyeOff size={16} />}
-              </button>
-              <span className="seg__n">{s.index + 1}</span>
-              <TimeField
-                value={s.start}
-                disabled={s.index === 0}
-                onCommit={(t) => moveBoundary(s.index, t)}
-              />
-              <span className="seg__dash">→</span>
-              <TimeField
-                value={s.end}
-                disabled={s.index === segments.length - 1}
-                onCommit={(t) => moveBoundary(s.index + 1, t)}
-              />
-              <span className="seg__len">{(s.end - s.start).toFixed(2)}s</span>
-              <button
-                className="seg__drop"
-                onClick={() => removeBoundary(s.index)}
-                disabled={s.index === 0}
-                title="Merge with the part above"
-                aria-label={'Merge part ' + (s.index + 1) + ' with the one above'}
-              >
-                <Close size={13} />
-              </button>
-            </li>
-          ))}
-        </ol>
+      {sheet === 'export' ? (
+        <ExportSheet
+          video={video}
+          bucket={bucket}
+          pieces={pieces}
+          total={total}
+          hasAudio={info.hasAudio}
+          soundOff={soundOff}
+          onSoundOff={setSoundOff}
+          mode={outMode}
+          onMode={setOutMode}
+          onClose={() => setSheet(null)}
+        />
+      ) : null}
+      {sheet === 'audio' ? <AudioSheet video={video} bucket={bucket} onClose={() => setSheet(null)} /> : null}
+    </div>
+  )
+}
 
-        <div className="editor__side">
+function Tool ({ icon, label, hint, on, title, ...rest }) {
+  return (
+    <button className={'tool' + (on ? ' is-on' : '')} title={title || (hint ? `${label} (${hint})` : label)} {...rest}>
+      <span className="tool__icon">{icon}</span>
+      <span className="tool__label">{label}</span>
+    </button>
+  )
+}
+
+function TypedSplit ({ total, onSubmit, onClose }) {
+  const [text, setText] = useState('')
+  const [error, setError] = useState(null)
+  return (
+    <form
+      className="ed__panel"
+      onSubmit={(e) => {
+        e.preventDefault()
+        const problem = onSubmit(text)
+        setError(problem)
+        if (!problem) setText('')
+      }}
+    >
+      <label className="ed__panel-label" htmlFor="split-at">Split at</label>
+      <input
+        id="split-at"
+        className="ed__field"
+        value={text}
+        onChange={(e) => { setText(e.target.value); setError(null) }}
+        onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+        placeholder="1:15"
+        autoFocus
+        spellCheck={false}
+      />
+      <span className="ed__panel-hint">on the timeline, 00:00 to {formatClock(total, true)}</span>
+      <button className="ed__go" type="submit" disabled={!text.trim()}>Split</button>
+      {error ? <span className="ed__panel-error">{error}</span> : null}
+    </form>
+  )
+}
+
+function PartsSplit ({ replacing, total, onSubmit, onClose }) {
+  const [n, setN] = useState('5')
+  const [error, setError] = useState(null)
+  const count = Math.round(Number(n))
+  const each = count >= 2 ? total / count : 0
+  return (
+    <form
+      className="ed__panel"
+      onSubmit={(e) => {
+        e.preventDefault()
+        const problem = onSubmit(count)
+        setError(problem)
+        if (!problem) onClose()
+      }}
+    >
+      <label className="ed__panel-label" htmlFor="split-n">Cut into</label>
+      <input
+        id="split-n"
+        className="ed__field ed__field--n"
+        type="number"
+        min="2"
+        max="100"
+        value={n}
+        onChange={(e) => { setN(e.target.value); setError(null) }}
+        onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+        autoFocus
+      />
+      <span className="ed__panel-label">equal parts</span>
+      <span className="ed__panel-hint">
+        {each ? `about ${formatClock(each, true)} each, saved as separate files` : ''}
+        {replacing ? '. Replaces your current cuts; Undo brings them back' : ''}
+      </span>
+      <button className="ed__go" type="submit" disabled={!(count >= 2)}>Cut</button>
+      {error ? <span className="ed__panel-error">{error}</span> : null}
+    </form>
+  )
+}
+
+function useEscape (onClose, busy) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, busy])
+}
+
+function Written ({ result }) {
+  const list = Array.isArray(result.written) ? result.written : [result.written]
+  return (
+    <div className="written">
+      <p className="written__head">
+        <Check size={14} /> {list.length} file{list.length === 1 ? '' : 's'} saved
+      </p>
+      {/* The full path, because "it went somewhere" is not an answer. */}
+      <p className="written__where" title={result.dir}>{result.dir}</p>
+      <ul>{list.map((w) => <li key={w.name}>{w.name}</li>)}</ul>
+    </div>
+  )
+}
+
+function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, mode, onMode, onClose }) {
+  const [fast, setFast] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+  useEscape(onClose, busy)
+
+  async function go () {
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      setResult(await exportCuts({
+        id: video.id,
+        segments: pieces.map((p) => ({ start: p.start, end: p.end })),
+        join: mode === 'join',
+        stripAudio: soundOff,
+        mode: mode === 'parts' && fast ? 'fast' : 'accurate'
+      }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const n = pieces.length
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onClose()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Export</h2>
+
+        <div className="choices" role="radiogroup" aria-label="What to export">
+          <button
+            className={'choice' + (mode === 'join' ? ' is-on' : '')}
+            role="radio"
+            aria-checked={mode === 'join'}
+            onClick={() => onMode('join')}
+            disabled={busy}
+          >
+            <strong>One video</strong>
+            <span>{n === 1 ? 'The clip as trimmed' : `All ${n} pieces joined in order`}, {formatClock(total, true)} long</span>
+          </button>
+          <button
+            className={'choice' + (mode === 'parts' ? ' is-on' : '')}
+            role="radio"
+            aria-checked={mode === 'parts'}
+            onClick={() => onMode('parts')}
+            disabled={busy}
+          >
+            <strong>Separate parts</strong>
+            <span>{n} file{n === 1 ? '' : 's'}, one for each piece</span>
+          </button>
+        </div>
+
+        <label className="opt">
+          <input type="checkbox" checked={soundOff} onChange={(e) => onSoundOff(e.target.checked)} disabled={busy || !hasAudio} />
+          <span>
+            Remove the sound
+            <em>{hasAudio ? 'A silent video, so you can add your own audio.' : 'This clip has no sound anyway.'}</em>
+          </span>
+        </label>
+        {mode === 'parts' ? (
           <label className="opt">
-            <input type="checkbox" checked={stripAudio} onChange={(e) => setStripAudio(e.target.checked)} />
-            <span>
-              Remove the sound
-              <em>Exports a silent clip so you can add your own audio.</em>
-            </span>
-          </label>
-
-          <label className="opt">
-            <input type="checkbox" checked={mode === 'fast'} onChange={(e) => setMode(e.target.checked ? 'fast' : 'accurate')} />
+            <input type="checkbox" checked={fast} onChange={(e) => setFast(e.target.checked)} disabled={busy} />
             <span>
               Fast cut, no re-encode
-              <em>Near instant, but only lands on keyframes so the cut can drift a second or two.</em>
+              <em>Near instant, but each part can only start on a keyframe, so it may begin a few seconds early.</em>
             </span>
           </label>
+        ) : null}
 
-          <div className="summary">
-            <span>
-              <strong>{kept.length}</strong> of {segments.length} part{segments.length === 1 ? '' : 's'}
-            </span>
-            <span className="summary__len">{keptLength.toFixed(2)}s total</span>
-          </div>
+        <p className="sheet__body sheet__where">
+          Saved in the <strong>edits</strong> folder inside “{bucket.name}”. The original is not changed.
+        </p>
 
-          <button className="pill pill--solid" onClick={doExport} disabled={busy || kept.length === 0}>
+        {error ? <p className="sheet__error">{error}</p> : null}
+        {result ? <Written result={result} /> : null}
+
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={busy}>{result ? 'Done' : 'Cancel'}</button>
+          <button className="pill pill--solid" onClick={go} disabled={busy}>
             <Download size={16} />
-            {busy ? 'Exporting…' : 'Export ' + kept.length + ' file' + (kept.length === 1 ? '' : 's')}
+            {busy ? 'Exporting…' : result ? 'Export again' : mode === 'join' ? 'Export video' : `Export ${n} file${n === 1 ? '' : 's'}`}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
-          {error ? <p className="libnote libnote--error">{error}</p> : null}
+function AudioSheet ({ video, bucket, onClose }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [result, setResult] = useState(null)
+  useEscape(onClose, busy)
 
-          <div className="pullaudio">
-            <span className="pullaudio__label">Pull the audio out</span>
-            <div className="pullaudio__row">
-              <button
-                className="tool__go"
-                onClick={() => grabAudio('copy')}
-                disabled={audioBusy || (info && !info.hasAudio)}
-                title="Copies the existing audio with no quality lost"
-              >
-                {audioBusy ? 'Working…' : 'Keep quality'}
-              </button>
-              <button
-                className="tool__go"
-                onClick={() => grabAudio('mp3')}
-                disabled={audioBusy || (info && !info.hasAudio)}
-                title="Re-encodes to mp3, which more things will play"
-              >
-                As mp3
-              </button>
-            </div>
-            {info && !info.hasAudio
-              ? <p className="pullaudio__note">This clip has no audio track.</p>
-              : null}
-            {audioError ? <p className="pullaudio__note pullaudio__note--bad">{audioError}</p> : null}
-            {audioDone ? (
-              <p className="pullaudio__note pullaudio__note--good">
-                {audioDone.written.name}
-                <br />
-                {audioDone.lossless
-                  ? 'Copied straight out, nothing re-encoded.'
-                  : 'Converted to mp3.'}
-              </p>
-            ) : null}
-          </div>
+  async function grab (format) {
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      setResult(await pullAudio(video.id, format))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
-          {results ? (
-            <div className="written">
-              <p className="written__head">
-                <Check size={14} /> {results.written.length} file
-                {results.written.length === 1 ? '' : 's'} written
-              </p>
-              {/* The full path, because "it went somewhere" is not an answer. */}
-              <p className="written__where" title={results.dir}>{results.dir}</p>
-              <ul>
-                {results.written.map((w) => <li key={w.name}>{w.name}</li>)}
-              </ul>
-            </div>
-          ) : null}
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onClose()}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Extract audio</h2>
+        <p className="sheet__body">
+          Saves the sound of the whole clip as its own file, in the <strong>audio</strong> folder
+          inside “{bucket.name}”.
+        </p>
+        <div className="choices">
+          <button className="choice" onClick={() => grab('copy')} disabled={busy}>
+            <strong>Keep quality</strong>
+            <span>Copied straight out, nothing lost</span>
+          </button>
+          <button className="choice" onClick={() => grab('mp3')} disabled={busy}>
+            <strong>As mp3</strong>
+            <span>Plays on anything</span>
+          </button>
+        </div>
+        {busy ? <p className="sheet__body">Working…</p> : null}
+        {error ? <p className="sheet__error">{error}</p> : null}
+        {result ? <Written result={result} /> : null}
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={busy}>{result ? 'Done' : 'Close'}</button>
         </div>
       </div>
     </div>
