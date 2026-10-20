@@ -4,12 +4,16 @@ import { Back, Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icon
 import ConfirmRemove from './ConfirmRemove.jsx'
 import { assign, createBucket, undo, videoUrl } from './api.js'
 
+// Same natural order the server uses, with one shared collator rather than
+// localeCompare's options form, which rebuilds one per comparison.
+const byName = new Intl.Collator(undefined, { numeric: true }).compare
+
 // Puts an item back in the order the server sorts by, so a restored video, or
 // one whose move failed, lands where it was rather than at the end.
 function insertSorted (list, item) {
   if (list.some((x) => x.id === item.id)) return list
   const next = [...list, item]
-  next.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  next.sort((a, b) => byName(a.name, b.name))
   return next
 }
 

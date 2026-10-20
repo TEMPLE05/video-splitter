@@ -172,18 +172,34 @@ Press `Esc` to back out of the picker without changing anything.
 
 ### Removing a bucket
 
-Hover a bucket and click the small x, either on the sorting screen or on the
-library tabs. Removing is not deleting. Any videos inside move back to your
-main folder and rejoin the queue, and only the empty folder goes.
+Hover a bucket and click the small x, either on the sorting screen or on a
+folder tile in the library. Removing is not deleting. Any videos inside move
+back to your main folder and rejoin the queue, and only the empty folder goes.
 
-A bucket holding exported clips, or files that are not videos, is refused
-outright. Move those out yourself first, so nothing can be lost by accident.
+Before offering the button, the app checks everything inside the bucket. It
+refuses, and touches nothing, if the bucket holds pulled audio, exported clips,
+any folder of your own with something in it, or files that are not videos. The
+confirmation says exactly what it found. Empty leftover folders and files
+Windows creates on its own, such as `desktop.ini`, do not count.
+
+The folder itself is only ever removed once it is empty, so even a file that
+appears at the last moment stops the removal rather than being lost.
 
 ## Editing
 
-Press `L` or the grid button to open the library. Pick a bucket along the top
-and its clips appear as a grid. Each card plays a preview on hover. Click one
-to open it in the editor.
+Press `L` or the grid button to open the library. It works like File Explorer:
+a page of folders, one per bucket, each showing a frame from its first clip.
+Click a folder to open it on its own screen. `Esc`, `Backspace` or the
+"Library" link at the top takes you back up a level.
+
+Each card shows a still frame. Rest the pointer on one and it plays a preview.
+Click it to open it in the editor. Coming back from the editor returns you to
+the same folder at the same scroll position.
+
+Thumbnails are small images made once per clip and kept in a `.cache` folder
+next to the app, never inside your own folders. The first visit to a folder
+makes them as you look, a few at a time; after that they appear instantly. Only
+three load at once, so the rest of the app stays responsive while they do.
 
 The editor works on **parts**. A clip starts as one part covering the whole
 thing. Split it wherever you like, then choose which parts to keep.
@@ -278,6 +294,9 @@ a preview, because browsers cannot decode them.
 `videosplitter.config.json` is written next to `package.json` and holds the
 source folder and bucket list. Delete it to start clean. It is gitignored.
 
+`.cache/thumbs` holds the library's thumbnails. It is safe to delete at any
+time; they are simply made again as you browse. It is gitignored too.
+
 ## Still to come
 
 **Publishing.** Upload a finished clip straight to YouTube. This needs a Google
@@ -295,7 +314,9 @@ server/index.js       API: scans folders, streams video, moves files, runs FFmpe
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
 src/Player.jsx        Video stage and transport for sorting
-src/Library.jsx       Bucket browser and clip grid
+src/Library.jsx       Folder page and clip grid, File Explorer style
+src/Thumb.jsx         Thumbnail loader, capped at three requests at once
+src/ConfirmRemove.jsx Checks a bucket's contents before allowing removal
 src/Editor.jsx        Splitting, part selection and export
 src/SourcePicker.jsx  Server-side folder browser
 src/icons.jsx         Inline SVG icon set

@@ -1,4 +1,5 @@
 import express from 'express'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -53,6 +54,13 @@ loadConfig()
 const history = []
 
 /* -------------------------------------------------------------- path helpers */
+
+// Natural filename order ("clip 2" before "clip 10"), built once.
+// localeCompare with an options object builds a fresh collator on every single
+// comparison: measured at 217 ms to sort 1,070 names against 8 ms with this
+// shared one. That cost was paid on every refresh of the sorting queue and,
+// after the library rebuild, for every folder's cover as well.
+const byName = new Intl.Collator(undefined, { numeric: true }).compare
 
 const encodeId = (name) => Buffer.from(name, 'utf8').toString('base64url')
 const decodeId = (id) => Buffer.from(id, 'base64url').toString('utf8')
@@ -136,20 +144,37 @@ async function listBuckets () {
   }
   if (changed) await saveConfig()
 
-  return Promise.all(
-    config.buckets.map(async (b) => {
-      // The UI needs all three to decide what removing this bucket would do
-      // before it asks the user to confirm.
-      const inside = await bucketContents(path.join(config.sourceDir, b.name))
-      return {
-        id: b.id,
-        name: b.name,
-        count: inside ? inside.videos.length : 0,
-        edits: inside ? inside.edits : 0,
-        others: inside ? inside.others.length : 0
-      }
-    })
-  )
+  return Promise.all(config.buckets.map((b) => bucketGlance(b)))
+}
+
+/**
+ * The cheap view of a bucket that every screen needs: how many clips, and
+ * which one to show as its cover. One directory read, nothing deeper.
+ *
+ * What removing a bucket would cost is a separate, thorough question asked
+ * only when someone is about to remove it, via /api/buckets/:id/contents.
+ * Answering it here as well meant scanning every bucket's subfolders on
+ * every refresh.
+ */
+async function bucketGlance (bucket) {
+  let entries = []
+  try {
+    entries = await fsp.readdir(path.join(config.sourceDir, bucket.name), { withFileTypes: true })
+  } catch {
+    entries = []
+  }
+  const vids = entries
+    .filter((e) => e.isFile() && VIDEO_EXT.has(path.extname(e.name).toLowerCase()))
+    .map((e) => e.name)
+  // The cover is the first clip in name order. Finding it is one pass; no need
+  // to sort the whole folder on every refresh just to read element zero.
+  const first = vids.reduce((best, n) => (best === null || byName(n, best) < 0 ? n : best), null)
+  return {
+    id: bucket.id,
+    name: bucket.name,
+    count: vids.length,
+    cover: first ? encodeId(bucket.name + '/' + first) : null
+  }
 }
 
 async function listQueue () {
@@ -177,21 +202,12 @@ async function listQueue () {
       }
     })
 
-  out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  out.sort((a, b) => byName(a.name, b.name))
   return out
 }
 
 // One bucket's counts, for replies that only need to report what changed.
-async function bucketSummary (bucket) {
-  const inside = await bucketContents(path.join(config.sourceDir, bucket.name))
-  return {
-    id: bucket.id,
-    name: bucket.name,
-    count: inside ? inside.videos.length : 0,
-    edits: inside ? inside.edits : 0,
-    others: inside ? inside.others.length : 0
-  }
-}
+const bucketSummary = (bucket) => bucketGlance(bucket)
 
 function queueEntry (name) {
   const ext = path.extname(name).toLowerCase()
@@ -298,7 +314,7 @@ app.get('/api/browse', wrap(async (req, res) => {
   const dirs = entries
     .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !e.name.startsWith('$'))
     .map((e) => ({ name: e.name, path: path.join(full, e.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .sort((a, b) => byName(a.name, b.name))
 
   // Counting inside every subfolder is what makes the list useful: you can see
   // where the videos are without opening each one. Capped so a folder with
@@ -374,6 +390,35 @@ app.post('/api/buckets', wrap(async (req, res) => {
   res.json(await snapshot())
 }))
 
+// Files Windows and macOS drop into folders on their own. They carry no work of
+// yours, so they neither block a removal nor survive one.
+const OS_JUNK = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
+const isJunk = (name) => OS_JUNK.has(name.toLowerCase())
+
+// Counts every real file under a folder, however deep.
+async function countFilesDeep (dir) {
+  let entries
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let n = 0
+  for (const e of entries) {
+    if (e.isDirectory()) n += await countFilesDeep(path.join(dir, e.name))
+    else if (!isJunk(e.name)) n++
+  }
+  return n
+}
+
+/**
+ * A complete inventory of a bucket, used to decide whether removing it is safe.
+ *
+ * The earlier version only looked at top-level files and the edits folder. It
+ * never looked inside audio/ or any folder you made yourself, so removal
+ * reported those buckets as safe and then deleted them recursively, tracks and
+ * all. Everything under the bucket is accounted for now.
+ */
 async function bucketContents (dir) {
   let entries
   try {
@@ -382,22 +427,82 @@ async function bucketContents (dir) {
     return null
   }
   const isVideo = (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())
-  const files = entries.filter((e) => e.isFile()).map((e) => e.name)
+  const files = entries.filter((e) => e.isFile() && !isJunk(e.name)).map((e) => e.name)
 
-  let edits = 0
-  try {
-    const made = await fsp.readdir(path.join(dir, 'edits'), { withFileTypes: true })
-    edits = made.filter((f) => f.isFile()).length
-  } catch {
-    edits = 0
-  }
+  const subdirs = await Promise.all(
+    entries
+      .filter((e) => e.isDirectory())
+      .map(async (e) => ({ name: e.name, files: await countFilesDeep(path.join(dir, e.name)) }))
+  )
+  const sub = (name) => subdirs.find((s) => s.name.toLowerCase() === name)?.files || 0
 
   return {
     videos: files.filter(isVideo),
     others: files.filter((n) => !isVideo(n)),
-    edits
+    edits: sub('edits'),
+    audio: sub('audio'),
+    // Any other folder with something in it, such as one you made by hand.
+    folders: subdirs
+      .filter((s) => s.name.toLowerCase() !== 'edits' && s.name.toLowerCase() !== 'audio' && s.files > 0)
+      .map((s) => ({ name: s.name, files: s.files }))
   }
 }
+
+/**
+ * Deletes a folder only if it holds nothing but empty folders and OS junk.
+ *
+ * Deliberately not fs.rm with recursive: rmdir refuses a folder that still has
+ * anything in it, so even if a check upstream were wrong, or a file arrived
+ * mid-removal, this can only ever remove empty structure.
+ */
+async function removeEmptyTree (dir) {
+  const entries = await fsp.readdir(dir, { withFileTypes: true })
+  for (const e of entries) {
+    const full = path.join(dir, e.name)
+    if (e.isDirectory()) await removeEmptyTree(full)
+    else if (isJunk(e.name)) await fsp.unlink(full)
+    else throw httpError(409, `Found "${e.name}" while removing the folder, so it was left in place. Nothing was deleted.`)
+  }
+  await fsp.rmdir(dir)
+}
+
+// What would be lost if this bucket were removed, in words. Null means nothing.
+function removalBlocker (name, inside) {
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const held = []
+  if (inside.audio > 0) held.push(plural(inside.audio, 'pulled audio track', 'pulled audio tracks') + ' in its audio folder')
+  if (inside.edits > 0) held.push(plural(inside.edits, 'exported clip', 'exported clips') + ' in its edits folder')
+  for (const f of inside.folders) held.push(`${plural(f.files, 'file', 'files')} in a folder called "${f.name}"`)
+  if (inside.others.length > 0) {
+    held.push(plural(inside.others.length, 'file that is not a video', 'files that are not videos') +
+      ` (${inside.others.slice(0, 3).join(', ')}${inside.others.length > 3 ? ', â€¦' : ''})`)
+  }
+  if (held.length === 0) return null
+  const total = inside.audio + inside.edits + inside.others.length +
+    inside.folders.reduce((sum, f) => sum + f.files, 0)
+  return `"${name}" holds ${held.join(', ')}. Move ${total === 1 ? 'that' : 'those'} out first, so nothing is lost.`
+}
+
+// The confirmation sheet asks this before offering the button, so it can say
+// exactly what is inside rather than guessing from cached counts.
+app.get('/api/buckets/:id/contents', wrap(async (req, res) => {
+  const bucket = config.buckets.find((b) => b.id === req.params.id)
+  if (!bucket) throw httpError(404, 'Unknown bucket')
+  const inside = await bucketContents(resolveInSource(bucket.name))
+  if (!inside) {
+    res.json({ gone: true, videos: 0, audio: 0, edits: 0, others: 0, folders: [], blocker: null })
+    return
+  }
+  res.json({
+    gone: false,
+    videos: inside.videos.length,
+    audio: inside.audio,
+    edits: inside.edits,
+    others: inside.others.length,
+    folders: inside.folders,
+    blocker: removalBlocker(bucket.name, inside)
+  })
+}))
 
 /**
  * Removes a bucket for real.
@@ -406,8 +511,9 @@ async function bucketContents (dir) {
  * any folder sitting in the source directory. The folder itself has to go.
  *
  * Nothing is deleted: videos are moved back to the source folder so they land
- * in the queue again. Exports and unrecognised files are never touched, and a
- * bucket holding them is refused rather than quietly emptied.
+ * in the queue again. Anything else in the bucket, whether pulled audio,
+ * exports, your own folders or stray files, makes the removal refuse rather
+ * than take it with it.
  */
 app.delete('/api/buckets/:id', wrap(async (req, res) => {
   const bucket = config.buckets.find((b) => b.id === req.params.id)
@@ -424,17 +530,8 @@ app.delete('/api/buckets/:id', wrap(async (req, res) => {
     return
   }
 
-  if (inside.edits > 0) {
-    throw httpError(409,
-      `"${bucket.name}" holds ${inside.edits} exported clip${inside.edits === 1 ? '' : 's'} ` +
-      'in its edits folder. Move or delete those first, then remove the bucket.')
-  }
-
-  if (inside.others.length > 0) {
-    throw httpError(409,
-      `"${bucket.name}" holds files that are not videos (${inside.others.slice(0, 3).join(', ')}` +
-      `${inside.others.length > 3 ? ', …' : ''}). Move them out first, so nothing is lost.`)
-  }
+  const blocker = removalBlocker(bucket.name, inside)
+  if (blocker) throw httpError(409, blocker)
 
   if (inside.videos.length > 0 && req.query.unfile !== '1') {
     throw httpError(409,
@@ -446,8 +543,9 @@ app.delete('/api/buckets/:id', wrap(async (req, res) => {
     await moveFile(path.join(dir, name), path.join(config.sourceDir, name))
   }
 
-  // Only an empty folder, plus possibly an empty edits folder, is left.
-  await fsp.rm(dir, { recursive: true, force: true })
+  // Never a recursive delete. If anything other than empty folders and OS junk
+  // is somehow still here, this refuses and leaves the folder alone.
+  await removeEmptyTree(dir)
 
   config.buckets = config.buckets.filter((b) => b.id !== bucket.id)
   await saveConfig()
@@ -656,37 +754,152 @@ app.get('/api/bucket/:id', wrap(async (req, res) => {
     throw httpError(404, 'That bucket folder is gone')
   }
 
-  const videos = []
-  for (const entry of entries) {
-    if (!entry.isFile()) continue
+  // Sizes read in parallel. One at a time, a folder of 187 clips on OneDrive
+  // took up to 275 ms before the library could draw anything.
+  const candidates = entries.filter((e) =>
+    e.isFile() && VIDEO_EXT.has(path.extname(e.name).toLowerCase()))
+  const videos = (await Promise.all(candidates.map(async (entry) => {
     const ext = path.extname(entry.name).toLowerCase()
-    if (!VIDEO_EXT.has(ext)) continue
-    let size = 0
     try {
-      size = (await fsp.stat(path.join(dir, entry.name))).size
+      const st = await fsp.stat(path.join(dir, entry.name))
+      return {
+        id: encodeId(bucket.name + '/' + entry.name),
+        name: entry.name,
+        size: st.size,
+        ext,
+        playable: PLAYABLE_EXT.has(ext)
+      }
     } catch {
-      continue
+      return null
     }
-    videos.push({
-      id: encodeId(bucket.name + '/' + entry.name),
-      name: entry.name,
-      size,
-      ext,
-      playable: PLAYABLE_EXT.has(ext)
-    })
-  }
-  videos.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  }))).filter(Boolean)
+  videos.sort((a, b) => byName(a.name, b.name))
 
-  // Exports land in a subfolder so they never mix with the originals.
-  let edits = 0
+  // Exports and pulled audio live in subfolders so they never mix with the
+  // originals; the header shows how many of each there are.
+  const countIn = async (sub, test) => {
+    try {
+      const made = await fsp.readdir(path.join(dir, sub), { withFileTypes: true })
+      return made.filter((f) => f.isFile() && test(f.name)).length
+    } catch {
+      return 0
+    }
+  }
+  const [edits, audio] = await Promise.all([
+    countIn('edits', (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())),
+    countIn('audio', (n) => !isJunk(n))
+  ])
+
+  res.json({ bucket: { id: bucket.id, name: bucket.name }, videos, edits, audio })
+}))
+
+/* ---------------------------------------------------------------- thumbnails */
+
+// Kept beside the app, never inside your folders, so the cache can't end up in
+// a bucket or get swept along by anything that moves files around.
+const CACHE_DIR = process.env.VIDEOSPLITTER_CACHE || path.join(ROOT, '.cache')
+const THUMB_DIR = path.join(CACHE_DIR, 'thumbs')
+
+// Runs at most `max` jobs at once and queues the rest.
+function limiter (max) {
+  let active = 0
+  const waiting = []
+  const pump = () => {
+    while (active < max && waiting.length) {
+      const job = waiting.shift()
+      active++
+      job.fn().then(job.resolve, job.reject).finally(() => {
+        active--
+        pump()
+      })
+    }
+  }
+  return (fn) => new Promise((resolve, reject) => {
+    waiting.push({ fn, resolve, reject })
+    pump()
+  })
+}
+
+// Three at a time: enough to fill a screen of cards quickly without a big
+// folder starting dozens of FFmpeg processes at once.
+const thumbSlot = limiter(3)
+const thumbsInFlight = new Map()
+
+async function renderThumb (file, out) {
+  await fsp.mkdir(path.dirname(out), { recursive: true })
+  const tmp = out.replace(/\.jpg$/, `.${process.pid}.${Date.now()}.tmp.jpg`)
+  // Half a second in usually skips a black opening frame. Clips shorter than
+  // that fall back to the very first frame.
+  for (const at of ['0.5', '0']) {
+    const { code } = await run('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', at, '-i', file,
+      '-frames:v', '1', '-an', '-sn',
+      '-vf', "scale='min(360,iw)':-2",
+      '-q:v', '6', '-update', '1', tmp
+    ])
+    let made = false
+    try {
+      made = code === 0 && (await fsp.stat(tmp)).size > 0
+    } catch {
+      made = false
+    }
+    if (made) {
+      // Written under a temporary name and renamed into place, so a request
+      // can never be handed a half-written image.
+      await fsp.rename(tmp, out)
+      return true
+    }
+    await fsp.rm(tmp, { force: true })
+  }
+  // Remember the failure, so an audio-only file is not retried on every view.
+  await fsp.writeFile(out + '.none', '')
+  return false
+}
+
+/**
+ * A small still frame for a library card.
+ *
+ * Cards used to be <video> elements, so opening a folder of 187 clips made the
+ * browser start 187 video downloads at once. Browsers only allow six
+ * connections to one server, so every other click queued behind them. A cached
+ * JPEG of a few kilobytes replaces each of those.
+ */
+app.get('/api/thumb/:id', wrap(async (req, res) => {
+  const file = resolveInSource(decodeId(req.params.id))
+  let st
   try {
-    const made = await fsp.readdir(path.join(dir, 'edits'), { withFileTypes: true })
-    edits = made.filter((f) => f.isFile() && VIDEO_EXT.has(path.extname(f.name).toLowerCase())).length
+    st = await fsp.stat(file)
   } catch {
-    edits = 0
+    throw httpError(404, 'That video is no longer there')
   }
 
-  res.json({ bucket: { id: bucket.id, name: bucket.name }, videos, edits })
+  // Keyed on path, size and modified time, so a replaced or edited file gets a
+  // fresh frame rather than a stale one.
+  const key = crypto.createHash('sha1').update(file + '|' + st.size + '|' + st.mtimeMs).digest('hex')
+  const etag = '"' + key + '"'
+  res.set({ ETag: etag, 'Cache-Control': 'private, max-age=3600' })
+  if (req.headers['if-none-match'] === etag) {
+    res.status(304).end()
+    return
+  }
+
+  const out = path.join(THUMB_DIR, key.slice(0, 2), key + '.jpg')
+  if (fs.existsSync(out + '.none')) throw httpError(404, 'No frame could be taken from that video')
+
+  if (!fs.existsSync(out)) {
+    if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+    // Several cards can ask for the same frame at once; they share one render.
+    let job = thumbsInFlight.get(key)
+    if (!job) {
+      job = thumbSlot(() => renderThumb(file, out)).finally(() => thumbsInFlight.delete(key))
+      thumbsInFlight.set(key, job)
+    }
+    if (!(await job)) throw httpError(404, 'No frame could be taken from that video')
+  }
+
+  res.type('image/jpeg')
+  sendStream(fs.createReadStream(out), res)
 }))
 
 app.get('/api/probe/:id', wrap(async (req, res) => {

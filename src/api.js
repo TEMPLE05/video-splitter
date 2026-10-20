@@ -48,5 +48,10 @@ export const clearSource = () => request('/api/source', { method: 'DELETE' })
 
 export const pullAudio = (id, format) => request('/api/audio', json('POST', { id, format }))
 
+export const thumbUrl = (id) => '/api/thumb/' + encodeURIComponent(id)
+
+// Everything inside a bucket, asked fresh right before a removal is offered.
+export const bucketContents = (id) => request('/api/buckets/' + encodeURIComponent(id) + '/contents')
+
 export const pullBucketAudio = (bucketId, format) =>
   request('/api/bucket/' + encodeURIComponent(bucketId) + '/audio', json('POST', { format }))

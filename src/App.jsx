@@ -20,6 +20,11 @@ export default function App () {
   const [waiting, setWaiting] = useState(true)
   const [attempt, setAttempt] = useState(0)
 
+  // Which library folder you were in and how far down. Held here because the
+  // library unmounts while the editor is open, and keeping it inside the
+  // library meant every return from the editor dropped you on the first folder.
+  const [libraryPlace, setLibraryPlace] = useState({ bucketId: null, scroll: 0 })
+
   useEffect(() => {
     let cancelled = false
     let timer = null
@@ -104,6 +109,8 @@ export default function App () {
       <Library
         state={state}
         onState={setState}
+        place={libraryPlace}
+        onPlace={setLibraryPlace}
         onOpen={(video, bucket) => setView({ name: 'edit', video, bucket })}
         onBack={() => setView({ name: 'sort' })}
       />
