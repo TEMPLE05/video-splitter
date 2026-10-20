@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import Timeline from './editor/Timeline.jsx'
+import Stage, { ASPECTS } from './editor/Stage.jsx'
 import usePlayback from './editor/usePlayback.js'
 import {
-  formatClock, initial, parseClock, removePiece, splitAt, splitEvenly, total as totalOf, trimPiece
+  formatClock, imagePiece, initial, insertAfter, isImage, offsets as offsetsOf, parseClock, removePiece, splitAt,
+  splitEvenly, total as totalOf, trimPiece
 } from './editor/model.js'
 import {
-  Back, Check, Download, Grid, Minus, Music, Pause, Play, Plus, Redo, Scissors, Timer, Trash, Undo,
-  VolumeOff, VolumeOn
+  Aspect, Back, Check, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors, Timer,
+  Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
-import { exportCuts, getStrip, getWave, probeVideo, pullAudio, videoUrl } from './api.js'
+import {
+  exportCuts, getStrip, getWave, listMedia, probeVideo, pullAudio, uploadMedia, videoUrl
+} from './api.js'
 
 const MIN_PIECE = 0.1
 const MAX_PPS = 400
 const HISTORY = 100
+const PLAIN_LOOK = { crop: null, canvas: 'original', background: 'blur' }
+const SHAPES = ['9:16', '1:1', '4:5', '16:9']
 
 function decodePeaks (b64) {
   const bin = atob(b64)
@@ -21,28 +27,43 @@ function decodePeaks (b64) {
   return out
 }
 
+/** The largest crop of a given width:height, centred in the frame. */
+function centredCrop (ratio, W, H) {
+  const rn = (ratio * H) / W
+  let w = 1
+  let h = 1 / rn
+  if (h > 1) { h = 1; w = rn }
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h }
+}
+
 /**
  * The editor, laid out like CapCut on a phone: the picture on top, the
  * timeline under it with the playhead fixed in the middle, the tools along the
  * bottom.
  *
- * The edit is a list of pieces of the clip. Split cuts the piece under the
- * playhead in two, Delete removes the selected piece and closes the gap, and
- * the handles on a selected piece trim it. Export makes one finished video by
- * default; "Into parts" switches it to one file per piece.
+ * The edit is a list of pieces (stretches of the clip, or pictures), an
+ * optional song laid under them, and the look of the frame: a crop, a canvas
+ * shape and what fills around the video. All of it is undoable.
  */
 export default function Editor ({ video, bucket, onBack }) {
   const [info, setInfo] = useState(null)
   const [loadError, setLoadError] = useState(null)
 
-  // Undo history. present is the edit; draft is a trim still being dragged.
+  // Undo history over the whole edit. The drafts hold a drag in progress so
+  // it becomes one undo step when it ends, not hundreds.
   const [hist, setHist] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [lookDraft, setLookDraft] = useState(null)
+  const [musicDraft, setMusicDraft] = useState(null)
+  const lookDraftRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
 
   const [strip, setStrip] = useState(null)
   const [stripImg, setStripImg] = useState(null)
   const [wave, setWave] = useState(null)
+  const [songWave, setSongWave] = useState(null)
+  const imagesRef = useRef({})
+  const [, setImagesLoaded] = useState(0)
 
   const [width, setWidth] = useState(0)
   const [zoom, setZoom] = useState(null)
@@ -50,18 +71,26 @@ export default function Editor ({ video, bucket, onBack }) {
   const [soundOff, setSoundOff] = useState(false)
   const [outMode, setOutMode] = useState('join')
   const [panel, setPanel] = useState(null)
+  const [cropRatio, setCropRatio] = useState(null)
   const [sheet, setSheet] = useState(null)
   const [note, setNote] = useState(null)
   const noteTimer = useRef(0)
   const trimBase = useRef(null)
 
-  const pieces = draft ?? hist?.present ?? []
+  const edit = hist?.present
+  const pieces = draft ?? edit?.pieces ?? []
+  const look = lookDraft ?? edit?.look ?? PLAIN_LOOK
+  const music = edit?.music ? { ...edit.music, ...(musicDraft || {}) } : null
   const total = totalOf(pieces)
   const fps = info?.fps || 30
   const frame = 1 / fps
   const duration = info?.duration || 0
 
-  const pb = usePlayback(pieces, hist?.present, fps, previewMuted || soundOff)
+  const pb = usePlayback(pieces, edit?.pieces, fps, {
+    videoMuted: previewMuted || soundOff,
+    musicMuted: previewMuted,
+    music: music ? { url: videoUrl(music.id), offset: music.offset, volume: music.volume, duration: music.duration } : null
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -71,7 +100,7 @@ export default function Editor ({ video, bucket, onBack }) {
         if (!d.hasVideo) throw new Error('This file has no picture to edit.')
         if (!(d.duration > 0)) throw new Error('Could not read how long this clip is.')
         setInfo(d)
-        setHist({ past: [], present: initial(d.duration), future: [] })
+        setHist({ past: [], present: { pieces: initial(d.duration), music: null, look: PLAIN_LOOK }, future: [] })
       })
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
 
@@ -97,17 +126,43 @@ export default function Editor ({ video, bucket, onBack }) {
     return () => { cancelled = true; clearTimeout(noteTimer.current) }
   }, [video.id])
 
+  // The song's waveform, for its lane on the timeline.
+  const songId = edit?.music?.id
+  useEffect(() => {
+    if (!songId) { setSongWave(null); return }
+    let cancelled = false
+    getWave(songId)
+      .then((w) => { if (!cancelled) setSongWave({ id: songId, rate: w.rate, peaks: w.peaks ? decodePeaks(w.peaks) : null }) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [songId])
+
+  // Pictures in the edit, loaded once each for the timeline tiles.
+  useEffect(() => {
+    for (const p of pieces) {
+      if (!isImage(p) || imagesRef.current[p.image]) continue
+      const img = new Image()
+      img.onload = () => setImagesLoaded((n) => n + 1)
+      img.src = videoUrl(p.image)
+      imagesRef.current[p.image] = img
+    }
+  }, [pieces])
+
   function flash (text) {
     setNote(text)
     clearTimeout(noteTimer.current)
-    noteTimer.current = setTimeout(() => setNote(null), 4000)
+    noteTimer.current = setTimeout(() => setNote(null), 4500)
   }
 
   /* ------------------------------------------------------------ history */
 
+  function commitEdit (patch) {
+    setHist((h) => ({ past: [...h.past, h.present].slice(-HISTORY), present: { ...h.present, ...patch }, future: [] }))
+  }
+
   function commit (next) {
     if (!next) return false
-    setHist((h) => ({ past: [...h.past, h.present].slice(-HISTORY), present: next, future: [] }))
+    commitEdit({ pieces: next })
     return true
   }
 
@@ -183,7 +238,7 @@ export default function Editor ({ video, bucket, onBack }) {
       // edge, so the handle stays under the pointer. Everything after a right
       // edge ripples along live.
       if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
-      pb.peek(edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
+      if (!isImage(after)) pb.peek(edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
       return
     }
 
@@ -219,6 +274,72 @@ export default function Editor ({ video, bucket, onBack }) {
     setOutMode('parts')
     flash(`Cut into ${n} equal parts. Export will save ${n} separate files.`)
     return null
+  }
+
+  /* ------------------------------------------------------------- look */
+
+  function setLook (patch) {
+    commitEdit({ look: { ...look, ...patch } })
+  }
+
+  function onCrop (next, phase) {
+    if (phase === 'move') {
+      const d = { ...(edit?.look || PLAIN_LOOK), crop: next }
+      lookDraftRef.current = d
+      setLookDraft(d)
+      return
+    }
+    const d = lookDraftRef.current
+    lookDraftRef.current = null
+    setLookDraft(null)
+    if (d) commitEdit({ look: d })
+  }
+
+  function pickRatio (shape) {
+    const ratio = shape ? ASPECTS[shape] : null
+    setCropRatio(ratio)
+    if (ratio) setLook({ crop: centredCrop(ratio, info.width, info.height) })
+  }
+
+  /* ------------------------------------------------------------ sound */
+
+  async function addSong (media) {
+    setSheet(null)
+    let length = 0
+    try {
+      length = (await probeVideo(media.id)).duration || 0
+    } catch { /* plays anyway; the lane just runs to the end of the edit */ }
+    commitEdit({ music: { id: media.id, name: media.name, duration: length, offset: 0, volume: 1 } })
+    if (info?.hasAudio && !soundOff) {
+      setSoundOff(true)
+      flash(`Added ${media.name}. The clip's own sound is now off; turn Clip sound back on to hear both.`)
+    } else {
+      flash(`Added ${media.name}. Drag the green bar to choose which part of it plays.`)
+    }
+    setPanel('sound')
+  }
+
+  function onMusic ({ offset, phase }) {
+    if (!edit?.music) return
+    if (phase === 'start') { pb.pause(); return }
+    const len = edit.music.duration || total
+    const o = Math.min(Math.max(offset, -(total - 0.2)), Math.max(0, len - 0.2))
+    if (phase === 'move') { setMusicDraft({ offset: o }); return }
+    setMusicDraft(null)
+    if (phase === 'end' && Math.abs(o - edit.music.offset) > 0.001) commitEdit({ music: { ...edit.music, offset: o } })
+  }
+
+  /* ---------------------------------------------------------- pictures */
+
+  function addPicture (media, seconds) {
+    setSheet(null)
+    const piece = imagePiece(media, seconds)
+    const next = insertAfter(pieces, piece, selectedId || pieces[pieces.length - 1]?.id)
+    commit(next)
+    setSelectedId(piece.id)
+    const at = offsetsOf(next)[next.indexOf(piece)]
+    pb.seek(at, next)
+    flash(`Added ${media.name} for ${seconds} s. Drag its white handles to change how long it shows.`)
   }
 
   /* -------------------------------------------------------------- keys */
@@ -285,6 +406,13 @@ export default function Editor ({ video, bucket, onBack }) {
 
   const outputs = outMode === 'join' ? 1 : pieces.length
   const outLabel = outMode === 'join' ? '1 video' : `${outputs} file${outputs === 1 ? '' : 's'}`
+  const togglePanel = (name) => setPanel((p) => (p === name ? null : name))
+
+  let status = ''
+  if (note) status = note
+  else if (selected && isImage(selected)) status = `Picture · shows for ${formatClock(selected.end - selected.start, true)} · drag the white handles to change`
+  else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim`
+  else if (pieces.length > 1) status = `${pieces.length} pieces`
 
   return (
     <div className="editor" data-pieces={pieces.length}>
@@ -309,20 +437,20 @@ export default function Editor ({ video, bucket, onBack }) {
         </div>
       </header>
 
-      <div className="ed__stage" onClick={() => hist && pb.toggle()}>
-        {[pb.aRef, pb.bRef].map((ref, k) => (
-          <video
-            key={k}
-            ref={ref}
-            className={'ed__video' + (pb.front === k ? ' is-front' : '')}
-            src={videoUrl(video.id)}
-            preload="auto"
-            playsInline
-            muted
-          />
-        ))}
-        {!hist ? <span className="ed__loading">Opening…</span> : null}
-      </div>
+      <Stage
+        info={info}
+        look={look}
+        cropping={panel === 'crop'}
+        cropRatio={cropRatio}
+        onCrop={onCrop}
+        pb={pb}
+        src={videoUrl(video.id)}
+        stillUrl={pb.still ? videoUrl(pb.still) : undefined}
+        onClick={() => hist && pb.toggle()}
+        loading={!hist}
+      />
+      {/* The added song plays from here, kept in step by the playback engine. */}
+      <audio ref={pb.audioRef} src={music ? videoUrl(music.id) : undefined} preload="auto" />
 
       <div className="ed__transport">
         <button className="ctl" onClick={pb.toggle} disabled={!hist} aria-label={pb.playing ? 'Pause' : 'Play'} title="Play or pause (Space)">
@@ -331,20 +459,15 @@ export default function Editor ({ video, bucket, onBack }) {
         <span className="clock ed__clock">
           {formatClock(pb.t, true)} <span className="clock__sep">/</span> {formatClock(total, true)}
         </span>
-        <span className="ed__status" aria-live="polite">
-          {note ?? (selected
-            ? `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim`
-            : pieces.length > 1 ? `${pieces.length} pieces` : '')}
-        </span>
+        <span className="ed__status" aria-live="polite">{status}</span>
         <div className="ed__transport-right">
           <button
             className="ctl"
             onClick={() => setPreviewMuted((m) => !m)}
-            title={soundOff ? 'The clip sound is off for the export' : 'Mute the preview (M)'}
+            title="Mute the preview (M)"
             aria-label={previewMuted ? 'Unmute preview' : 'Mute preview'}
-            disabled={soundOff}
           >
-            {previewMuted || soundOff ? <VolumeOff size={18} /> : <VolumeOn size={18} />}
+            {previewMuted ? <VolumeOff size={18} /> : <VolumeOn size={18} />}
           </button>
           <button className="ctl" onClick={() => zoomBy(1 / 1.5)} disabled={pps <= fitPps + 1e-9} title="Zoom out (−)" aria-label="Zoom out">
             <Minus size={18} />
@@ -361,15 +484,20 @@ export default function Editor ({ video, bucket, onBack }) {
         pps={pps}
         strip={strip}
         stripImg={stripImg}
+        images={imagesRef.current}
         peaks={wave ? wave.peaks : undefined}
         waveRate={wave?.rate || 50}
         soundOff={soundOff}
+        music={music ? { ...music, peaks: songWave?.id === music.id ? songWave.peaks : null, rate: songWave?.rate } : null}
+        musicDragging={Boolean(musicDraft)}
         selectedId={selectedId}
         onWidth={setWidth}
         onSeek={(T) => pb.seek(clampT(T))}
         onSelect={(id) => { setSelectedId(id); if (id) setNote(null) }}
         onTrim={onTrim}
         onZoom={zoomBy}
+        onMusic={onMusic}
+        onAddMusic={() => { pb.pause(); setSheet('audio-pick') }}
       />
 
       {panel === 'at' ? (
@@ -383,21 +511,74 @@ export default function Editor ({ video, bucket, onBack }) {
           onClose={() => setPanel(null)}
         />
       ) : null}
+      {panel === 'crop' ? (
+        <div className="ed__panel">
+          <span className="ed__panel-label">Crop</span>
+          <Choice on={!cropRatio} onClick={() => pickRatio(null)}>Free</Choice>
+          {SHAPES.map((s) => (
+            <Choice key={s} on={cropRatio === ASPECTS[s]} onClick={() => pickRatio(s)}>{s}</Choice>
+          ))}
+          <span className="ed__panel-hint">Drag the box or its edges. Pull the top and bottom in to crop the height.</span>
+          <button className="ed__ghost" onClick={() => { setCropRatio(null); setLook({ crop: null }) }} disabled={!look.crop}>Reset</button>
+          <button className="ed__go" onClick={() => setPanel(null)}>Done</button>
+        </div>
+      ) : null}
+      {panel === 'canvas' ? (
+        <div className="ed__panel">
+          <span className="ed__panel-label">Shape</span>
+          <Choice on={look.canvas === 'original'} onClick={() => setLook({ canvas: 'original' })}>Original</Choice>
+          {SHAPES.map((s) => (
+            <Choice key={s} on={look.canvas === s} onClick={() => setLook({ canvas: s })}>{s}</Choice>
+          ))}
+          <span className="ed__panel-sep" />
+          <span className="ed__panel-label">Fill</span>
+          <Choice on={look.background !== 'black'} onClick={() => setLook({ background: 'blur' })}>Blur</Choice>
+          <Choice on={look.background === 'black'} onClick={() => setLook({ background: 'black' })}>Black</Choice>
+          <button className="ed__go" onClick={() => setPanel(null)}>Done</button>
+        </div>
+      ) : null}
+      {panel === 'sound' && music ? (
+        <SoundPanel
+          music={music}
+          clipSound={!soundOff}
+          canClipSound={Boolean(info?.hasAudio)}
+          onClipSound={(on) => setSoundOff(!on)}
+          onVolume={(v, done) => {
+            if (!done) setMusicDraft({ volume: v })
+            else { setMusicDraft(null); if (v !== edit.music.volume) commitEdit({ music: { ...edit.music, volume: v } }) }
+          }}
+          onReplace={() => setSheet('audio-pick')}
+          onRemove={() => { commitEdit({ music: null }); setPanel(null); flash('Removed the added sound') }}
+          onClose={() => setPanel(null)}
+        />
+      ) : null}
 
       <nav className="ed__tools" aria-label="Editing tools">
         <Tool icon={<Scissors />} label="Split" hint="S" onClick={split} disabled={!hist} />
         <Tool icon={<Trash />} label="Delete" hint="Del" onClick={deleteSelected} disabled={!selected || pieces.length < 2} />
-        <Tool icon={<Timer />} label="Split at…" onClick={() => setPanel((p) => (p === 'at' ? null : 'at'))} on={panel === 'at'} disabled={!hist} />
-        <Tool icon={<Grid />} label="Into parts" onClick={() => setPanel((p) => (p === 'parts' ? null : 'parts'))} on={panel === 'parts'} disabled={!hist} />
+        <Tool icon={<Timer />} label="Split at…" onClick={() => togglePanel('at')} on={panel === 'at'} disabled={!hist} />
+        <Tool icon={<Grid />} label="Into parts" onClick={() => togglePanel('parts')} on={panel === 'parts'} disabled={!hist} />
+        <span className="ed__tools-sep" />
+        <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist} />
+        <Tool icon={<Aspect />} label="Canvas" onClick={() => togglePanel('canvas')} on={panel === 'canvas' || look.canvas !== 'original'} disabled={!hist} />
+        <Tool icon={<Photo />} label="Add picture" onClick={() => { pb.pause(); setSheet('image-pick') }} disabled={!hist} />
+        <span className="ed__tools-sep" />
+        <Tool
+          icon={<Music />}
+          label={music ? 'Sound' : 'Add sound'}
+          onClick={() => { pb.pause(); music ? togglePanel('sound') : setSheet('audio-pick') }}
+          on={panel === 'sound' || Boolean(music)}
+          disabled={!hist}
+        />
         <Tool
           icon={soundOff ? <VolumeOff /> : <VolumeOn />}
-          label={soundOff ? 'Sound off' : 'Sound on'}
+          label={soundOff ? 'Clip sound off' : 'Clip sound'}
           onClick={() => setSoundOff((s) => !s)}
           on={soundOff}
           disabled={!info || !info.hasAudio}
-          title={info && !info.hasAudio ? 'This clip has no sound' : 'Turn the clip sound off for the export, so you can add your own'}
+          title={info && !info.hasAudio ? 'This clip has no sound' : 'Turn the clip\'s own sound off, for the preview and the export'}
         />
-        <Tool icon={<Music />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} />
+        <Tool icon={<Download />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} />
       </nav>
 
       {sheet === 'export' ? (
@@ -409,12 +590,16 @@ export default function Editor ({ video, bucket, onBack }) {
           hasAudio={info.hasAudio}
           soundOff={soundOff}
           onSoundOff={setSoundOff}
+          music={edit.music}
+          look={edit.look}
           mode={outMode}
           onMode={setOutMode}
           onClose={() => setSheet(null)}
         />
       ) : null}
       {sheet === 'audio' ? <AudioSheet video={video} bucket={bucket} onClose={() => setSheet(null)} /> : null}
+      {sheet === 'audio-pick' ? <MediaSheet kind="audio" bucket={bucket} onPick={addSong} onClose={() => setSheet(null)} /> : null}
+      {sheet === 'image-pick' ? <MediaSheet kind="image" bucket={bucket} onPick={addPicture} onClose={() => setSheet(null)} /> : null}
     </div>
   )
 }
@@ -426,6 +611,10 @@ function Tool ({ icon, label, hint, on, title, ...rest }) {
       <span className="tool__label">{label}</span>
     </button>
   )
+}
+
+function Choice ({ on, children, ...rest }) {
+  return <button className={'chip' + (on ? ' is-on' : '')} aria-pressed={Boolean(on)} {...rest}>{children}</button>
 }
 
 function TypedSplit ({ total, onSubmit, onClose }) {
@@ -497,12 +686,136 @@ function PartsSplit ({ replacing, total, onSubmit, onClose }) {
   )
 }
 
+function SoundPanel ({ music, clipSound, canClipSound, onClipSound, onVolume, onReplace, onRemove, onClose }) {
+  const pct = Math.round(music.volume * 100)
+  const from = music.offset >= 0
+    ? `from ${formatClock(music.offset, true)} into the song`
+    : `${formatClock(-music.offset, true)} into the video`
+  return (
+    <div className="ed__panel">
+      <span className="ed__panel-label ed__song" title={music.name}>♪ {music.name}</span>
+      <label className="ed__panel-hint ed__vol">
+        Volume
+        <input
+          type="range"
+          min="0"
+          max="100"
+          value={pct}
+          onChange={(e) => onVolume(Number(e.target.value) / 100, false)}
+          onPointerUp={(e) => onVolume(Number(e.target.value) / 100, true)}
+          onKeyUp={(e) => onVolume(Number(e.target.value) / 100, true)}
+          aria-label="Song volume"
+        />
+        <span className="ed__vol-n">{pct}%</span>
+      </label>
+      <span className="ed__panel-hint">Starts {from}. Drag the green bar to slide it.</span>
+      {canClipSound ? (
+        <Choice on={clipSound} onClick={() => onClipSound(!clipSound)}>{clipSound ? 'Clip sound on' : 'Clip sound off'}</Choice>
+      ) : null}
+      <button className="ed__ghost" onClick={onReplace}>Replace</button>
+      <button className="ed__ghost ed__ghost--bad" onClick={onRemove}>Remove</button>
+      <button className="ed__go" onClick={onClose}>Done</button>
+    </div>
+  )
+}
+
 function useEscape (onClose, busy) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose, busy])
+}
+
+/**
+ * Picks a sound or a picture: one already in this bucket, or one from
+ * anywhere on the computer, which is copied into the bucket so the edit (and
+ * you) can find it again.
+ */
+function MediaSheet ({ kind, bucket, onPick, onClose }) {
+  const [files, setFiles] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [seconds, setSeconds] = useState('3')
+  const inputRef = useRef(null)
+  useEscape(onClose, busy)
+  const audio = kind === 'audio'
+  const secs = Number(seconds)
+  const secsOk = audio || (secs >= 0.5 && secs <= 600)
+
+  useEffect(() => {
+    let cancelled = false
+    listMedia(bucket.id, kind)
+      .then((d) => { if (!cancelled) setFiles(d.files) })
+      .catch((err) => { if (!cancelled) { setFiles([]); setError(err.message) } })
+    return () => { cancelled = true }
+  }, [bucket.id, kind])
+
+  const pick = (m) => { if (secsOk) onPick(m, secs) }
+
+  async function upload (file) {
+    if (!file) return
+    setBusy(true)
+    setError(null)
+    try {
+      pick(await uploadMedia(bucket.id, kind, file))
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onClose()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">{audio ? 'Add sound' : 'Add a picture'}</h2>
+        <p className="sheet__body">
+          {audio
+            ? 'It plays under the whole edit. The clip\'s own sound is turned off, so it replaces it; you can turn it back on to mix the two.'
+            : 'It goes after the selected piece, or at the end, and shows for as long as you choose.'}
+        </p>
+        {!audio ? (
+          <label className="ed__secs">
+            Show for
+            <input className="ed__field ed__field--n" type="number" min="0.5" max="600" step="0.5" value={seconds} onChange={(e) => setSeconds(e.target.value)} />
+            seconds
+          </label>
+        ) : null}
+
+        <div className="medialist">
+          {files === null ? <p className="sheet__body">Looking in “{bucket.name}”…</p> : null}
+          {files && !files.length ? (
+            <p className="sheet__body">
+              No {audio ? 'sound files' : 'pictures'} in “{bucket.name}” yet.
+              {audio ? ' Audio you pull out of a clip lands here too.' : ''}
+            </p>
+          ) : null}
+          {(files || []).map((m) => (
+            <button key={m.id} className="mediaitem" onClick={() => pick(m)} disabled={busy || !secsOk}>
+              {audio ? <Music size={16} /> : <img className="mediaitem__thumb" src={videoUrl(m.id)} alt="" loading="lazy" />}
+              <span className="mediaitem__name">{m.name}</span>
+              <span className="mediaitem__where">{m.folder ? m.folder + ' folder' : bucket.name}</span>
+            </button>
+          ))}
+        </div>
+
+        {error ? <p className="sheet__error">{error}</p> : null}
+        <input
+          ref={inputRef}
+          type="file"
+          accept={audio ? 'audio/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.aac' : 'image/*'}
+          hidden
+          onChange={(e) => upload(e.target.files?.[0])}
+        />
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="pill pill--solid" onClick={() => inputRef.current?.click()} disabled={busy || !secsOk}>
+            {busy ? 'Copying it in…' : 'Choose from this computer…'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Written ({ result }) {
@@ -533,12 +846,15 @@ function Written ({ result }) {
   )
 }
 
-function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, mode, onMode, onClose }) {
+function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, music, look, mode, onMode, onClose }) {
   const [fast, setFast] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
   useEscape(onClose, busy)
+
+  // A stream copy cannot crop, fill, add pictures or mix in a song.
+  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some(isImage)
 
   async function go () {
     setBusy(true)
@@ -547,10 +863,14 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
     try {
       setResult(await exportCuts({
         id: video.id,
-        segments: pieces.map((p) => ({ start: p.start, end: p.end })),
+        segments: pieces.map((p) => (isImage(p)
+          ? { kind: 'image', image: p.image, length: p.end - p.start }
+          : { start: p.start, end: p.end })),
         join: mode === 'join',
         stripAudio: soundOff,
-        mode: mode === 'parts' && fast ? 'fast' : 'accurate'
+        mode: mode === 'parts' && fast && plain ? 'fast' : 'accurate',
+        music: music ? { id: music.id, offset: music.offset, volume: music.volume } : null,
+        look
       }))
     } catch (err) {
       setError(err.message)
@@ -560,6 +880,12 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
   }
 
   const n = pieces.length
+  const extras = [
+    look.crop ? 'cropped' : null,
+    look.canvas !== 'original' ? `${look.canvas} with a ${look.background === 'black' ? 'black' : 'blurred'} fill` : null,
+    music ? `♪ ${music.name}` : null
+  ].filter(Boolean)
+
   return (
     <div className="sheetwrap" onClick={() => !busy && onClose()}>
       <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
@@ -588,14 +914,16 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
           </button>
         </div>
 
+        {extras.length ? <p className="sheet__body sheet__extras">With: {extras.join(' · ')}</p> : null}
+
         <label className="opt">
           <input type="checkbox" checked={soundOff} onChange={(e) => onSoundOff(e.target.checked)} disabled={busy || !hasAudio} />
           <span>
-            Remove the sound
-            <em>{hasAudio ? 'A silent video, so you can add your own audio.' : 'This clip has no sound anyway.'}</em>
+            Remove the clip's own sound
+            <em>{!hasAudio ? 'This clip has no sound anyway.' : music ? 'Only the added song will play.' : 'A silent video, so you can add your own audio.'}</em>
           </span>
         </label>
-        {mode === 'parts' ? (
+        {mode === 'parts' && plain ? (
           <label className="opt">
             <input type="checkbox" checked={fast} onChange={(e) => setFast(e.target.checked)} disabled={busy} />
             <span>

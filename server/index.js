@@ -26,8 +26,25 @@ const MIME = {
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
   '.mkv': 'video/x-matroska',
-  '.avi': 'video/x-msvideo'
+  '.avi': 'video/x-msvideo',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.flac': 'audio/flac',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp'
 }
+
+// What the editor can lay over a clip: a new soundtrack, or a still image.
+const AUDIO_EXT = new Set(['.mp3', '.m4a', '.aac', '.wav', '.ogg', '.opus', '.flac'])
+const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'])
 
 /* ------------------------------------------------------------------ config */
 
@@ -770,10 +787,16 @@ async function probe (file) {
   }
   const fps = rate(video?.avg_frame_rate) || rate(video?.r_frame_rate) || 30
 
+  // A phone clip filmed upright is often stored sideways with a rotation flag.
+  // FFmpeg turns it upright when decoding, so crops and canvas sizes have to be
+  // worked out on the upright size, which is what this reports.
+  const rotation = Number(video?.side_data_list?.find((d) => d.rotation !== undefined)?.rotation ?? video?.tags?.rotate ?? 0)
+  const sideways = Math.abs(rotation) % 180 === 90
+
   return {
     duration: Number(info.format?.duration) || 0,
-    width: video?.width || 0,
-    height: video?.height || 0,
+    width: (sideways ? video?.height : video?.width) || 0,
+    height: (sideways ? video?.width : video?.height) || 0,
     fps: Math.min(Math.max(fps, 1), 240),
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
@@ -1129,6 +1152,78 @@ app.get('/api/probe/:id', wrap(async (req, res) => {
   res.json(await probe(file))
 }))
 
+/* ------------------------------------------------- editor media: audio, images */
+
+const mediaKinds = {
+  audio: { folder: 'audio', ext: AUDIO_EXT },
+  image: { folder: 'images', ext: IMAGE_EXT }
+}
+
+function bucketOf (id) {
+  const bucket = config.buckets.find((b) => b.id === id)
+  if (!bucket) throw httpError(404, 'Unknown bucket')
+  return bucket
+}
+
+/**
+ * Sound files and pictures a clip in this bucket can use: whatever sits in the
+ * bucket's own `audio` or `images` folder, plus any loose in the bucket.
+ * Pulled audio lands in `audio`, so a track pulled from one clip can go
+ * straight under another.
+ */
+app.get('/api/bucket/:id/media', wrap(async (req, res) => {
+  const bucket = bucketOf(req.params.id)
+  const kind = mediaKinds[req.query.kind]
+  if (!kind) throw httpError(400, 'Ask for audio or image')
+  const found = []
+  for (const sub of [kind.folder, '']) {
+    const rel = sub ? bucket.name + '/' + sub : bucket.name
+    let entries = []
+    try {
+      entries = await fsp.readdir(resolveInSource(rel), { withFileTypes: true })
+    } catch { continue }
+    for (const e of entries) {
+      if (!e.isFile() || !kind.ext.has(path.extname(e.name).toLowerCase())) continue
+      found.push({ id: encodeId(rel + '/' + e.name), name: e.name, folder: sub || null })
+    }
+  }
+  found.sort((a, b) => byName(a.name, b.name))
+  res.json({ files: found })
+}))
+
+/**
+ * Copies a file from the computer into the bucket's `audio` or `images`
+ * folder, so the edit can use it and it stays with the clips that use it.
+ * The body is the raw file, streamed straight to disk.
+ */
+app.post('/api/bucket/:id/upload', wrap(async (req, res) => {
+  const bucket = bucketOf(req.params.id)
+  const kind = mediaKinds[req.query.kind]
+  if (!kind) throw httpError(400, 'Upload audio or an image')
+  const name = path.basename(String(req.query.name || '')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim()
+  if (!name || !kind.ext.has(path.extname(name).toLowerCase())) {
+    throw httpError(400, `That is not a ${req.query.kind === 'audio' ? 'sound' : 'picture'} file this app can use`)
+  }
+  const dir = resolveInSource(bucket.name + '/' + kind.folder)
+  await fsp.mkdir(dir, { recursive: true })
+  const target = await reservePath(path.join(dir, name))
+  try {
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(target)
+      req.pipe(out)
+      req.on('error', reject)
+      req.on('aborted', () => reject(new Error('Upload cut off')))
+      out.on('error', reject)
+      out.on('finish', resolve)
+    })
+  } catch (err) {
+    await fsp.rm(target, { force: true })
+    throw httpError(500, 'Could not save that file: ' + err.message)
+  }
+  const saved = path.basename(target)
+  res.json({ id: encodeId(bucket.name + '/' + kind.folder + '/' + saved), name: saved, folder: kind.folder })
+}))
+
 /* ---------------------------------------------------------------- subtitles */
 
 const srtTime = (t) => {
@@ -1164,24 +1259,29 @@ async function loadSubtitles (meta, file) {
   return tracks
 }
 
+const pieceLength = (p) => (p.kind === 'image' ? p.length : p.end - p.start)
+
 /**
  * Writes each track retimed to an edit: lines inside the kept pieces move to
  * where those pieces land in the output, lines in cut-out stretches vanish, and
- * a line spanning a cut is clipped to it. The output seek of a fast cut does
- * not apply to these inputs, so every edit times them from zero.
+ * a line spanning a cut is clipped to it. Image pieces just take up time. The
+ * output seek of a fast cut does not apply to these inputs, so every edit
+ * times them from zero.
  */
 async function writeSubtitles (tracks, pieces) {
   const out = []
   for (const track of tracks) {
     const lines = []
     let offset = 0
-    for (const { start, end } of pieces) {
-      for (const c of track.cues) {
-        const a = Math.max(c.a, start)
-        const b = Math.min(c.b, end)
-        if (b - a > 0.04) lines.push({ a: a - start + offset, b: b - start + offset, text: c.text })
+    for (const piece of pieces) {
+      if (piece.kind !== 'image') {
+        for (const c of track.cues) {
+          const a = Math.max(c.a, piece.start)
+          const b = Math.min(c.b, piece.end)
+          if (b - a > 0.04) lines.push({ a: a - piece.start + offset, b: b - piece.start + offset, text: c.text })
+        }
       }
-      offset += end - start
+      offset += pieceLength(piece)
     }
     if (!lines.length) continue
     lines.sort((x, y) => x.a - y.a)
@@ -1220,6 +1320,136 @@ async function keyframeAtOrBefore (file, t) {
   return 0
 }
 
+/* ------------------------------------------------------- the look of the frame */
+
+// Output shapes offered by the canvas tool, as width over height.
+const ASPECTS = { '9:16': 9 / 16, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '3:4': 3 / 4 }
+const even = (n) => Math.max(2, Math.round(n / 2) * 2)
+
+/** A crop as fractions of the frame, or null when it would crop nothing. */
+function cleanCrop (crop) {
+  if (!crop || typeof crop !== 'object') return null
+  const n = (v) => Math.min(Math.max(Number(v) || 0, 0), 1)
+  const x = n(crop.x)
+  const y = n(crop.y)
+  const w = Math.min(n(crop.w), 1 - x)
+  const h = Math.min(n(crop.h), 1 - y)
+  if (w < 0.05 || h < 0.05) throw httpError(400, 'That crop is too small')
+  if (x < 0.002 && y < 0.002 && w > 0.996 && h > 0.996) return null
+  return { x, y, w, h }
+}
+
+/**
+ * Size of the finished frame. The video keeps its own pixels (cropped, if
+ * cropped); a canvas shape adds room around it rather than shrinking it, and
+ * the long side is capped at 1920 so a landscape clip on a 9:16 canvas does
+ * not become a 3,400 pixel tall file.
+ */
+function frameSize (meta, crop, canvas) {
+  const vw = meta.width * (crop ? crop.w : 1)
+  const vh = meta.height * (crop ? crop.h : 1)
+  const A = ASPECTS[canvas]
+  let W = vw
+  let H = vh
+  if (A && vw / vh > A + 0.01) H = vw / A
+  else if (A && vw / vh < A - 0.01) W = vh * A
+  const scale = Math.min(1, 1920 / Math.max(W, H))
+  return { W: even(W * scale), H: even(H * scale), padded: Boolean(A) && Math.abs(vw / vh - A) > 0.01 }
+}
+
+/**
+ * Filter text that turns one input picture into a W x H frame: letterboxed on
+ * black, or on a blurred, zoomed copy of itself the way phone apps fill a
+ * vertical frame. The blur is done at a twelfth of the size, which looks the
+ * same and costs almost nothing.
+ */
+function fitInto (input, output, W, H, background, tag) {
+  const fg = `scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`
+  if (background === 'blur') {
+    const sw = even(W / 12)
+    const sh = even(H / 12)
+    return `${input}split=2[f${tag}][b${tag}];` +
+      `[b${tag}]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=${sw}:${sh},gblur=sigma=3,scale=${W}:${H},setsar=1[bb${tag}];` +
+      `[f${tag}]${fg}[ff${tag}];[bb${tag}][ff${tag}]overlay=(W-w)/2:(H-h)/2${output}`
+  }
+  return `${input}${fg},pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black${output}`
+}
+
+const AFMT = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo'
+
+/**
+ * Renders pieces into one file, re-encoded. Used for the finished video (all
+ * pieces) and for each separate part (one piece each), so both get the same
+ * crop, canvas, soundtrack and subtitles.
+ *
+ * Video pieces are seeked inputs of the clip; image pieces are a still looped
+ * for their length. Every piece is brought to the same size, rate and sound
+ * format, joined with concat, and the new soundtrack, if any, is laid under
+ * the result starting at the right moment of the song.
+ */
+async function render ({ file, meta, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps }) {
+  const { W, H, padded } = frameSize(meta, crop, canvas)
+  const fps = meta.fps.toFixed(3)
+  const total = pieces.reduce((s, p) => s + pieceLength(p), 0)
+  const args = ['-hide_banner', '-loglevel', 'error', '-y']
+  const graph = []
+  const pairs = []
+
+  pieces.forEach((p, i) => {
+    const len = pieceLength(p)
+    if (p.kind === 'image') {
+      args.push('-loop', '1', '-framerate', fps, '-t', String(len), '-i', p.file)
+      graph.push(fitInto(`[${i}:v:0]`, `[s${i}]`, W, H, background, i))
+    } else {
+      args.push('-ss', String(p.start), '-t', String(len), '-i', file)
+      const cropText = crop
+        ? `crop=${even(crop.w * meta.width)}:${even(crop.h * meta.height)}:${Math.round(crop.x * meta.width)}:${Math.round(crop.y * meta.height)},`
+        : ''
+      if (!padded) graph.push(`[${i}:v:0]${cropText}scale=${W}:${H},setsar=1[s${i}]`)
+      else graph.push(fitInto(`[${i}:v:0]${cropText}`, `[s${i}]`, W, H, background, i))
+    }
+    graph.push(`[s${i}]fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS[v${i}]`)
+    if (withOriginal) {
+      graph.push(p.kind === 'image' || !meta.hasAudio
+        ? `anullsrc=r=48000:cl=stereo,atrim=duration=${len}[a${i}]`
+        : `[${i}:a:0]${AFMT},apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
+      pairs.push(`[v${i}][a${i}]`)
+    } else {
+      pairs.push(`[v${i}]`)
+    }
+  })
+  graph.push(`${pairs.join('')}concat=n=${pieces.length}:v=1:a=${withOriginal ? 1 : 0}[vout]${withOriginal ? '[base]' : ''}`)
+
+  let audioOut = withOriginal ? '[base]' : null
+  let next = pieces.length
+  if (music) {
+    // The song's own time at the first moment of this render. Negative means
+    // the song has not started yet, so it waits.
+    const songAt = at + music.offset
+    if (songAt > 0) args.push('-ss', String(songAt))
+    args.push('-i', music.file)
+    const wait = songAt < 0 ? `,adelay=${Math.round(-songAt * 1000)}:all=1` : ''
+    graph.push(`[${next}:a:0]${AFMT},volume=${music.volume}${wait},apad,atrim=duration=${total},asetpts=PTS-STARTPTS[song]`)
+    next += 1
+    if (withOriginal) {
+      graph.push('[base][song]amix=inputs=2:duration=first:normalize=0[mixed]')
+      audioOut = '[mixed]'
+    } else {
+      audioOut = '[song]'
+    }
+  }
+
+  const subs = await writeSubtitles(tracks, pieces)
+  temps.push(...subs.map((s) => s.file))
+  const sub = subtitleArgs(subs, next)
+  args.push(...sub.inputs, '-filter_complex', graph.join(';'), '-map', '[vout]')
+  if (audioOut) args.push('-map', audioOut, '-c:a', 'aac', '-b:a', '192k')
+  args.push(...sub.outputs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart', target)
+  const result = await run('ffmpeg', args)
+  return { ...result, subtitles: subs.length, width: W, height: H }
+}
+
 app.post('/api/export', wrap(async (req, res) => {
   if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
 
@@ -1228,25 +1458,48 @@ app.post('/api/export', wrap(async (req, res) => {
   if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
 
   const stripAudio = Boolean(body.stripAudio)
-  const fast = body.mode === 'fast'
   const segments = Array.isArray(body.segments) ? body.segments : []
   if (segments.length === 0) throw httpError(400, 'Nothing to export. Keep at least one segment.')
+  if (segments.length > 100) throw httpError(400, 'Too many pieces; keep it under 100')
 
   const meta = await probe(file)
+  if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
+
   const clean = []
   for (const seg of segments) {
+    if (seg && seg.kind === 'image') {
+      const img = resolveInSource(decodeId(String(seg.image)))
+      if (!IMAGE_EXT.has(path.extname(img).toLowerCase()) || !fs.existsSync(img)) throw httpError(404, 'A picture in the edit is no longer there')
+      const length = Number(seg.length)
+      if (!(length >= 0.1 && length <= 600)) throw httpError(400, 'A picture has to show for between 0.1 and 600 seconds')
+      clean.push({ kind: 'image', file: img, length })
+      continue
+    }
     const start = Math.max(0, Number(seg.start) || 0)
     const end = Math.min(meta.duration || Number(seg.end), Number(seg.end))
     if (!(end > start)) throw httpError(400, 'A segment ends before it starts')
     if (end - start < 0.05) throw httpError(400, 'A segment is too short to export')
-    clean.push({ start, end })
+    clean.push({ kind: 'video', start, end })
   }
+
+  let music = null
+  if (body.music && body.music.id) {
+    const mfile = resolveInSource(decodeId(String(body.music.id)))
+    if (!fs.existsSync(mfile)) throw httpError(404, 'The added sound file is no longer there')
+    const volume = Math.min(Math.max(Number(body.music.volume ?? 1), 0), 2)
+    music = { file: mfile, offset: Number(body.music.offset) || 0, volume }
+  }
+  const look = body.look || {}
+  const crop = cleanCrop(look.crop)
+  const canvas = ASPECTS[look.canvas] ? look.canvas : 'original'
+  const background = look.background === 'black' ? 'black' : 'blur'
+  const plain = !music && !crop && canvas === 'original' && clean.every((p) => p.kind === 'video')
+  const fast = body.mode === 'fast' && !body.join && plain
 
   const outDir = path.join(path.dirname(file), 'edits')
   await fsp.mkdir(outDir, { recursive: true })
-
   const stem = path.basename(file, path.extname(file))
-  const withAudio = meta.hasAudio && !stripAudio
+  const withOriginal = meta.hasAudio && !stripAudio
   const tracks = await loadSubtitles(meta, file)
   const temps = []
 
@@ -1258,101 +1511,69 @@ app.post('/api/export', wrap(async (req, res) => {
   const sizeOf = async (f) => {
     try { return (await fsp.stat(f)).size } catch { return 0 }
   }
+  const common = { file, meta, withOriginal, music, crop, canvas, background, tracks, temps }
 
   try {
-    /**
-     * One finished video: every kept piece, in order, joined with the gaps
-     * closed. The way CapCut exports.
-     *
-     * Each piece is its own seeked input of the same file, so a short piece
-     * from a long episode only decodes from its nearest keyframe rather than
-     * from the start. Always re-encoded: joining stream-copied pieces glitches
-     * at every cut that is not on a keyframe, which is almost all of them.
-     */
+    // One finished video: every piece, in order, gaps closed. Always
+    // re-encoded, since joining stream-copied pieces glitches at every cut.
     if (body.join) {
-      if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
-      if (clean.length > 100) throw httpError(400, 'Too many pieces to join in one go; keep it under 100')
-
-      const subs = await writeSubtitles(tracks, clean)
-      temps.push(...subs.map((s) => s.file))
-      const sub = subtitleArgs(subs, clean.length)
-
       const target = await reservePath(path.join(outDir, stem + ' edit.mp4'))
-      const args = ['-hide_banner', '-loglevel', 'error', '-y']
-      for (const { start, end } of clean) {
-        args.push('-ss', String(start), '-t', String(end - start), '-i', file)
-      }
-      args.push(...sub.inputs)
-      const inputs = clean.map((_, i) => (withAudio ? `[${i}:v:0][${i}:a:0]` : `[${i}:v:0]`)).join('')
-      args.push(
-        '-filter_complex', `${inputs}concat=n=${clean.length}:v=1:a=${withAudio ? 1 : 0}[v]${withAudio ? '[a]' : ''}`,
-        '-map', '[v]'
-      )
-      if (withAudio) args.push('-map', '[a]', '-c:a', 'aac')
-      args.push(...sub.outputs)
-      args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart', target)
-
-      const { code, stderr } = await run('ffmpeg', args)
-      if (code !== 0) await fail(target, stderr)
+      const r = await render({ ...common, pieces: clean, target, at: 0 })
+      if (r.code !== 0) await fail(target, r.stderr)
       res.json({
         written: [{ name: path.basename(target), size: await sizeOf(target) }],
         dir: outDir,
         joined: true,
-        subtitles: subs.length
+        subtitles: r.subtitles,
+        size: { width: r.width, height: r.height }
       })
       return
     }
 
     const written = []
+    let at = 0
+    let subtitles = 0
     for (let i = 0; i < clean.length; i++) {
-      const { start, end } = clean[i]
+      const piece = clean[i]
       const label = clean.length > 1 ? ' part ' + (i + 1) : ' cut'
       const target = await reservePath(path.join(outDir, stem + label + '.mp4'))
-      const args = ['-hide_banner', '-loglevel', 'error', '-y']
-      let from = start
-      let subs
+      const finished = written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : ''
+      const entry = { name: '', size: 0 }
 
       if (fast) {
         // A stream copy can only begin on a keyframe. It used to seek on the
         // input, which kept the footage back to the previous keyframe hidden
         // inside the file behind an edit list: most players skipped it, some
         // showed it, and a 2 second cut could weigh 6 seconds. Now the cut
-        // starts on that keyframe openly, the output seek drops everything
+        // starts openly on that keyframe, the output seek drops everything
         // before it, and the reply says where it really starts.
-        from = await keyframeAtOrBefore(file, start)
+        const from = await keyframeAtOrBefore(file, piece.start)
         const seekIn = Math.max(0, from - 0.5)
-        const skip = from - seekIn
-        subs = await writeSubtitles(tracks, [{ start: from, end }])
+        const subs = await writeSubtitles(tracks, [{ kind: 'video', start: from, end: piece.end }])
+        temps.push(...subs.map((s) => s.file))
+        subtitles = Math.max(subtitles, subs.length)
         const sub = subtitleArgs(subs, 1)
-        args.push('-ss', String(seekIn), '-i', file, ...sub.inputs,
-          '-ss', String(skip), '-t', String(end - from),
-          '-map', '0:v:0')
-        if (withAudio) args.push('-map', '0:a:0')
+        const args = ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(seekIn), '-i', file, ...sub.inputs,
+          '-ss', String(from - seekIn), '-t', String(piece.end - from), '-map', '0:v:0']
+        if (withOriginal) args.push('-map', '0:a:0')
         args.push(...sub.outputs, '-c:v', 'copy', '-c:a', 'copy')
         if (subs.length) args.push('-c:s', 'mov_text')
+        args.push('-movflags', '+faststart', target)
+        const r = await run('ffmpeg', args)
+        if (r.code !== 0) await fail(target, r.stderr, finished)
+        Object.assign(entry, { asked: piece.start, startedAt: Math.round(from * 1000) / 1000 })
       } else {
-        // -ss before -i seeks fast, and when re-encoding it is also exact.
-        subs = await writeSubtitles(tracks, [{ start, end }])
-        const sub = subtitleArgs(subs, 1)
-        args.push('-ss', String(start), '-i', file, ...sub.inputs, '-t', String(end - start), '-map', '0:v:0')
-        if (withAudio) args.push('-map', '0:a:0')
-        args.push(...sub.outputs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p')
-        if (withAudio) args.push('-c:a', 'aac')
+        const r = await render({ ...common, pieces: [piece], target, at })
+        if (r.code !== 0) await fail(target, r.stderr, finished)
+        subtitles = Math.max(subtitles, r.subtitles)
       }
-      temps.push(...subs.map((s) => s.file))
-      args.push('-movflags', '+faststart', target)
-
-      const { code, stderr } = await run('ffmpeg', args)
-      if (code !== 0) {
-        await fail(target, stderr, written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : '')
-      }
-      const entry = { name: path.basename(target), size: await sizeOf(target) }
-      if (fast) Object.assign(entry, { asked: start, startedAt: Math.round(from * 1000) / 1000 })
+      entry.name = path.basename(target)
+      entry.size = await sizeOf(target)
       written.push(entry)
+      at += pieceLength(piece)
     }
 
-    res.json({ written, dir: outDir, subtitles: tracks.length })
+    res.json({ written, dir: outDir, subtitles })
   } finally {
     await Promise.all(temps.map((f) => fsp.rm(f, { force: true })))
   }

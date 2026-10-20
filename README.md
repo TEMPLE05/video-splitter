@@ -235,6 +235,30 @@ video into five parts gives five two-minute files. If you had already made
 cuts, it starts again from the whole clip; undo brings your cuts back. You can
 switch between one video and separate parts in the export window at any time.
 
+### Sound, crop, canvas and pictures
+
+- **Add sound** lays a song or any sound file under the whole edit. Pick one
+  from the bucket (audio you pulled out of another clip is listed), or choose
+  one from anywhere on your computer; it is copied into the bucket's `audio`
+  folder. The clip's own sound turns off, so the song replaces it. Turn **Clip
+  sound** back on to hear both. The song shows as a green bar under the clip:
+  drag it to choose which part of the song plays, and set its volume in the
+  Sound panel.
+- **Crop** shows the whole picture with a box over it. Drag the box, its
+  corners or its edges; pulling the top and bottom edges in crops the height.
+  The 9:16, 1:1, 4:5 and 16:9 buttons lock the box to that shape.
+- **Canvas** sets the shape of the finished video. When the video does not
+  fill it, the space around it is filled with a blurred copy of the picture,
+  the way TikTok and Shorts do it, or with black.
+- **Add picture** puts a still image after the selected piece, or at the end,
+  for as many seconds as you choose. It is a piece like any other: drag its
+  handles to change how long it shows, or delete it. Pictures from your
+  computer are copied into the bucket's `images` folder.
+
+The preview shows all of this as it will come out, and Undo covers every
+change. The export re-encodes when any of these are used; the fast cut is only
+offered when none are.
+
 ### Pulling the audio out
 
 **Extract audio** writes the clip's whole soundtrack to its own file in an
@@ -344,7 +368,8 @@ src/ConfirmRemove.jsx Checks a bucket's contents before allowing removal
 src/Editor.jsx        The editor screen, its tools and the export window
 src/editor/model.js   The edit as a list of pieces, and the operations on it
 src/editor/Timeline.jsx  Canvas timeline: frames, waveform, trimming, scrubbing
-src/editor/usePlayback.js  Plays the edit, swapping between two videos at cuts
+src/editor/usePlayback.js  Plays the edit: two videos swapped at cuts, pictures, the added song
+src/editor/Stage.jsx  The picture as exported: crop, canvas, blurred fill, crop box
 src/SourcePicker.jsx  Server-side folder browser
 src/icons.jsx         Inline SVG icon set
 src/api.js            Fetch wrappers

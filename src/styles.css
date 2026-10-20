@@ -1199,27 +1199,46 @@ kbd {
 
 .ed__error { margin: 16px; }
 
-/* Two videos stacked; the one playing is opaque. Neither is display:none,
-   because browsers stop decoding hidden media and the swap would stall. */
+/* The stage centres a frame the shape of the export. Inside it, a window the
+   shape of the (cropped) video; the videos are sized up and slid inside it so
+   only the crop shows. Two videos stacked, the one playing opaque: neither is
+   display:none, because browsers stop decoding hidden media. */
 .ed__stage {
   position: relative;
+  display: grid;
+  place-items: center;
   flex: 1;
   min-height: 0;
   margin: 12px 16px 6px;
   overflow: hidden;
-  border-radius: 12px;
   cursor: pointer;
+}
+.ed__frame { position: relative; overflow: hidden; border-radius: 10px; background: #000; }
+.ed__window {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  overflow: hidden;
+  transform: translate(-50%, -50%);
 }
 .ed__video {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
+  max-width: none;
+  object-fit: fill;
   opacity: 0;
   pointer-events: none;
 }
 .ed__video.is-front { opacity: 1; }
+.ed__bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  filter: blur(14px) brightness(0.9);
+  transform: scale(1.15);
+}
+.ed__bg--img { object-fit: cover; }
+.ed__still { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .ed__loading {
   position: absolute;
   inset: 0;
@@ -1227,6 +1246,44 @@ kbd {
   place-items: center;
   color: var(--faint);
 }
+
+/* The crop box: everything outside it dimmed, thirds drawn inside. */
+.crop { position: absolute; inset: 0; touch-action: none; cursor: default; }
+.crop__box {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.62);
+  outline: 2px solid #fff;
+  cursor: move;
+}
+.crop__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) 33.33%, transparent calc(33.33% + 0.5px),
+      transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) 66.66%, transparent calc(66.66% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) 33.33%, transparent calc(33.33% + 0.5px),
+      transparent calc(66.66% - 0.5px), rgba(255, 255, 255, 0.35) 66.66%, transparent calc(66.66% + 0.5px));
+}
+.crop__h { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; }
+.crop__h::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+.crop__h--nw { left: 0; top: 0; cursor: nwse-resize; }
+.crop__h--ne { left: 100%; top: 0; cursor: nesw-resize; }
+.crop__h--sw { left: 0; top: 100%; cursor: nesw-resize; }
+.crop__h--se { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop__h--n { left: 50%; top: 0; cursor: ns-resize; }
+.crop__h--s { left: 50%; top: 100%; cursor: ns-resize; }
+.crop__h--w { left: 0; top: 50%; cursor: ew-resize; }
+.crop__h--e { left: 100%; top: 50%; cursor: ew-resize; }
+.crop__h--n::after, .crop__h--s::after { inset: 6px 1px; }
+.crop__h--w::after, .crop__h--e::after { inset: 1px 6px; }
 
 .ed__export { height: 36px; padding: 0 16px; }
 .ed__export-n {
@@ -1424,3 +1481,76 @@ kbd {
 }
 .written__early { display: block; color: var(--faint); font-size: 11.5px; font-style: normal; }
 .written__note { margin: 8px 0 0; color: var(--dim); font-size: 12px; }
+
+/* ------------------------------------------- look, sound and picture tools */
+
+.chip {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.chip:hover { color: #fff; border-color: var(--edge-hi); }
+.chip.is-on { border-color: var(--accent); background: rgba(138, 180, 248, 0.16); color: var(--accent); }
+.ed__ghost {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ed__ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); }
+.ed__ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+.ed__ghost--bad:hover:not(:disabled) { background: var(--bad); color: #3a0a06; }
+.ed__panel-sep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.14); }
+.ed__tools-sep { flex: none; width: 1px; margin: 10px 6px; background: rgba(255, 255, 255, 0.1); }
+.ed__song {
+  max-width: 22ch;
+  overflow: hidden;
+  color: #a6ecc4;
+  text-overflow: ellipsis;
+}
+.ed__vol { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.ed__vol input { width: 110px; accent-color: #5ec88c; }
+.ed__vol-n { min-width: 4ch; color: var(--text); font-variant-numeric: tabular-nums; }
+
+.sheet__extras { margin-top: 10px; font-size: 12.5px; }
+.ed__secs { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: var(--dim); font-size: 13px; }
+.medialist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  margin-top: 12px;
+  overflow-y: auto;
+}
+.mediaitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.mediaitem:hover:not(:disabled) { border-color: var(--edge-hi); background: rgba(255, 255, 255, 0.08); }
+.mediaitem:disabled { opacity: 0.45; cursor: not-allowed; }
+.mediaitem__thumb { width: 36px; height: 36px; flex: none; border-radius: 6px; object-fit: cover; background: #111; }
+.mediaitem__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mediaitem__where { flex: none; color: var(--faint); font-size: 11.5px; }
+.tool { min-width: 70px; }

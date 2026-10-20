@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatClock, lengthOf, offsets as offsetsOf, total as totalOf } from './model.js'
+import { formatClock, isImage, lengthOf, offsets as offsetsOf, total as totalOf } from './model.js'
 
 /**
  * The CapCut timeline: the playhead stays in the middle and the edit slides
@@ -16,7 +16,9 @@ const CLIP_TOP = 30
 const FRAMES_H = 50
 const WAVE_H = 26
 const CLIP_H = FRAMES_H + WAVE_H
-const HEIGHT = CLIP_TOP + CLIP_H + 12
+const MUSIC_TOP = CLIP_TOP + CLIP_H + 8
+const MUSIC_H = 24
+const HEIGHT = MUSIC_TOP + MUSIC_H + 10
 const HANDLE = 12
 const DRAG_SLOP = 4
 const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
@@ -72,12 +74,25 @@ export default function Timeline (props) {
       x0: X(offs[i]),
       x1: X(offs[i] + lengthOf(piece))
     }))
-    return { p, W, cx, X, rects, end: totalOf(p.pieces) }
+    const end = totalOf(p.pieces)
+    // The song lane: the song's time at timeline time T is T + offset, so it
+    // begins at -offset and runs for its own length, shown within the edit.
+    let song = null
+    if (p.music) {
+      const from = Math.max(0, -p.music.offset)
+      const to = Math.min(end, (p.music.duration || Infinity) - p.music.offset)
+      if (to > from) song = { x0: X(from), x1: X(to), from, to }
+    }
+    return { p, W, cx, X, rects, end, song }
   }
 
   function hitTest (x, y) {
-    const { p, rects } = layout()
+    const { p, rects, song } = layout()
     if (y < CLIP_TOP - 2) return { zone: 'ruler' }
+    if (y >= MUSIC_TOP - 3 && y <= MUSIC_TOP + MUSIC_H + 3) {
+      if (p.music && song && x >= song.x0 - 4 && x <= song.x1 + 4) return { zone: 'music' }
+      return p.music ? { zone: 'none' } : { zone: 'addmusic' }
+    }
     if (y > CLIP_TOP + CLIP_H + 4) return { zone: 'none' }
     const sel = rects.find((r) => r.piece.id === p.selectedId)
     if (sel) {
@@ -141,7 +156,19 @@ export default function Timeline (props) {
       ctx.fillStyle = '#1d2128'
       ctx.fillRect(a, top, w, FRAMES_H)
 
-      if (strip && p.stripImg) {
+      const still = isImage(piece) ? p.images?.[piece.image] : null
+      if (still && still.naturalWidth) {
+        // A picture repeats along its piece, each tile cropped to fill.
+        const ratio = Math.min(Math.max(still.naturalWidth / still.naturalHeight, 0.5), 2)
+        const tw = FRAMES_H * ratio
+        const sw = Math.min(still.naturalWidth, still.naturalHeight * ratio)
+        const sh = sw / ratio
+        const sx = (still.naturalWidth - sw) / 2
+        const sy = (still.naturalHeight - sh) / 2
+        for (let k = Math.max(0, Math.floor((-a) / tw)); a + k * tw < Math.min(b, W); k++) {
+          ctx.drawImage(still, sx, sy, sw, sh, a + k * tw, top, tw + 0.5, FRAMES_H)
+        }
+      } else if (strip && p.stripImg && !isImage(piece)) {
         const from = Math.max(0, Math.floor((-a) / tileW))
         for (let k = from; a + k * tileW < Math.min(b, W); k++) {
           const tx = a + k * tileW
@@ -160,7 +187,10 @@ export default function Timeline (props) {
       const wy = top + FRAMES_H
       ctx.fillStyle = '#10161f'
       ctx.fillRect(a, wy, w, WAVE_H)
-      if (p.peaks && p.peaks.length) {
+      if (isImage(piece)) {
+        ctx.fillStyle = 'rgba(232, 234, 237, 0.14)'
+        ctx.fillRect(a, wy + WAVE_H / 2, w, 1)
+      } else if (p.peaks && p.peaks.length) {
         ctx.fillStyle = p.soundOff ? 'rgba(232, 234, 237, 0.18)' : 'rgba(138, 180, 248, 0.8)'
         const mid = wy + WAVE_H / 2
         const rate = p.waveRate
@@ -211,11 +241,48 @@ export default function Timeline (props) {
       }
     }
 
+    // The song lane.
+    const { song } = layout()
+    if (p.music && song) {
+      const a = Math.max(song.x0, -4)
+      const b = Math.min(song.x1, W + 4)
+      ctx.save()
+      ctx.beginPath()
+      ctx.roundRect(a, MUSIC_TOP, b - a, MUSIC_H, 6)
+      ctx.clip()
+      ctx.fillStyle = p.musicDragging ? 'rgba(94, 200, 140, 0.42)' : 'rgba(94, 200, 140, 0.26)'
+      ctx.fillRect(a, MUSIC_TOP, b - a, MUSIC_H)
+      if (p.music.peaks && p.music.peaks.length) {
+        ctx.fillStyle = 'rgba(160, 235, 190, 0.85)'
+        const mid = MUSIC_TOP + MUSIC_H / 2
+        const rate = p.music.rate || 50
+        for (let px = Math.max(a, 0); px < Math.min(b, W); px += 2) {
+          const s0 = p.t + (px - cx) / p.pps + p.music.offset
+          const i0 = Math.floor(s0 * rate)
+          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, p.music.peaks.length)
+          let peak = 0
+          for (let i = Math.max(i0, 0); i < i1; i++) if (p.music.peaks[i] > peak) peak = p.music.peaks[i]
+          const h = Math.max(1, (peak / 255) * (MUSIC_H - 6))
+          ctx.fillRect(px, mid - h / 2, 1.4, h)
+        }
+      }
+      ctx.font = FONT
+      ctx.textAlign = 'left'
+      ctx.fillStyle = '#eafff2'
+      ctx.fillText('♪ ' + p.music.name, Math.max(a, 0) + 8, MUSIC_TOP + MUSIC_H / 2 + 0.5)
+      ctx.restore()
+    } else if (!p.music) {
+      ctx.font = FONT
+      ctx.textAlign = 'left'
+      ctx.fillStyle = 'rgba(232, 234, 237, 0.34)'
+      ctx.fillText('♪  Add sound', cx + 10, MUSIC_TOP + MUSIC_H / 2 + 0.5)
+    }
+
     // The playhead, fixed in the middle.
     ctx.fillStyle = '#fff'
     ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
     ctx.shadowBlur = 4
-    ctx.fillRect(cx - 1, RULER - 2, 2, CLIP_H + (CLIP_TOP - RULER) + 8)
+    ctx.fillRect(cx - 1, RULER - 2, 2, MUSIC_TOP + MUSIC_H + 4 - (RULER - 2))
     ctx.beginPath()
     ctx.arc(cx, RULER - 2, 4, 0, Math.PI * 2)
     ctx.fill()
@@ -256,6 +323,11 @@ export default function Timeline (props) {
       p.onTrim({ id: hit.piece.id, edge: hit.edge, to: hit.piece[hit.edge], phase: 'start' })
       return
     }
+    if (hit.zone === 'music') {
+      drag.current = { mode: 'music', from: p.music.offset, x0: e.clientX }
+      p.onMusic({ offset: p.music.offset, phase: 'start' })
+      return
+    }
     drag.current = { mode: 'pending', hit, x0: e.clientX, y0: e.clientY, t0: p.t, x }
   }
 
@@ -265,12 +337,19 @@ export default function Timeline (props) {
     if (!d) {
       const { x, y } = pos(e)
       const hit = hitTest(x, y)
-      e.currentTarget.style.cursor = hit.zone === 'handle' ? 'ew-resize' : hit.zone === 'ruler' ? 'pointer' : 'grab'
+      e.currentTarget.style.cursor = hit.zone === 'handle' ? 'ew-resize'
+        : hit.zone === 'ruler' || hit.zone === 'addmusic' ? 'pointer'
+          : hit.zone === 'music' ? 'move' : 'grab'
       return
     }
     const dx = e.clientX - d.x0
     if (d.mode === 'trim') {
       p.onTrim({ id: d.id, edge: d.edge, to: d.from + dx / p.pps, phase: 'move' })
+      return
+    }
+    // Dragging the song right makes it start later, so less of it has played.
+    if (d.mode === 'music') {
+      p.onMusic({ offset: d.from - dx / p.pps, phase: 'move' })
       return
     }
     if (d.mode === 'pending' && Math.abs(dx) > DRAG_SLOP) {
@@ -289,9 +368,15 @@ export default function Timeline (props) {
       p.onTrim({ id: d.id, edge: d.edge, to: d.from + (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
       return
     }
+    if (d.mode === 'music') {
+      p.onMusic({ offset: d.from - (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
+      return
+    }
     e.currentTarget.style.cursor = 'grab'
     if (d.mode !== 'pending' || cancelled) return
-    if (d.hit.zone === 'ruler') {
+    if (d.hit.zone === 'addmusic') {
+      p.onAddMusic?.()
+    } else if (d.hit.zone === 'ruler') {
       p.onSeek(p.t + (d.x - size.current.w / 2) / p.pps)
     } else if (d.hit.zone === 'clip') {
       p.onSelect(d.hit.piece.id === p.selectedId ? null : d.hit.piece.id)

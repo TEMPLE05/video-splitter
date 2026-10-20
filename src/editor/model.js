@@ -17,6 +17,25 @@ export const newId = () => `p${++seq}`
 
 export const lengthOf = (p) => p.end - p.start
 
+/**
+ * A picture piece holds a still for its length. It keeps start and end like a
+ * video piece, so every operation here works on it unchanged, but only the
+ * difference means anything: it has no place in the source clip.
+ */
+export const isImage = (p) => p && p.kind === 'image'
+export const MAX_STILL = 600
+
+export function imagePiece (media, length) {
+  return { id: newId(), kind: 'image', image: media.id, name: media.name, start: 0, end: length }
+}
+
+/** Puts a piece after the one with id `afterId`, or at the end. */
+export function insertAfter (pieces, piece, afterId) {
+  const at = afterId ? pieces.findIndex((p) => p.id === afterId) : -1
+  if (at < 0) return [...pieces, piece]
+  return [...pieces.slice(0, at + 1), piece, ...pieces.slice(at + 1)]
+}
+
 export const total = (pieces) => pieces.reduce((sum, p) => sum + lengthOf(p), 0)
 
 export function initial (duration) {
@@ -82,6 +101,11 @@ export function removePiece (pieces, id) {
 export function trimPiece (pieces, id, edge, to, duration, min) {
   return pieces.map((p) => {
     if (p.id !== id) return p
+    // A still has no source to run out of, so either edge just sets its length.
+    if (isImage(p)) {
+      if (edge === 'start') return { ...p, start: Math.min(Math.max(to, p.end - MAX_STILL), p.end - min) }
+      return { ...p, end: Math.max(Math.min(to, p.start + MAX_STILL), p.start + min) }
+    }
     if (edge === 'start') return { ...p, start: Math.min(Math.max(to, 0), p.end - min) }
     return { ...p, end: Math.max(Math.min(to, duration), p.start + min) }
   })
@@ -105,7 +129,8 @@ export function splitEvenly (pieces, n, duration, min) {
 
 /** True when piece `i` carries straight on from piece `i - 1` in the source. */
 export function continuesFrom (pieces, i, frame) {
-  return i > 0 && Math.abs(pieces[i].start - pieces[i - 1].end) < frame / 2
+  return i > 0 && !isImage(pieces[i]) && !isImage(pieces[i - 1]) &&
+    Math.abs(pieces[i].start - pieces[i - 1].end) < frame / 2
 }
 
 export function formatClock (seconds, withFraction = false) {

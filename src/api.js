@@ -60,3 +60,15 @@ export const pullBucketAudio = (bucketId, format) =>
 export const getStrip = (id) => request('/api/strip/' + encodeURIComponent(id))
 
 export const getWave = (id) => request('/api/wave/' + encodeURIComponent(id))
+
+// Sounds or pictures an edit in this bucket can use.
+export const listMedia = (bucketId, kind) =>
+  request('/api/bucket/' + encodeURIComponent(bucketId) + '/media?kind=' + kind)
+
+// Copies a file chosen on this computer into the bucket's audio or images folder.
+export const uploadMedia = (bucketId, kind, file) =>
+  request('/api/bucket/' + encodeURIComponent(bucketId) + '/upload?kind=' + kind + '&name=' + encodeURIComponent(file.name), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file
+  })
