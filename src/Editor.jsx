@@ -4,7 +4,7 @@ import Timeline from './editor/Timeline.jsx'
 import Stage, { ASPECTS } from './editor/Stage.jsx'
 import { CAPTION_LOOK, captionChunks, newText, rescaleWords, retimeWords } from './editor/text.js'
 import { Choice, PartsSplit, SoundPanel, TextPanel, Tool, TransitionPanel, TypedSplit } from './editor/panels.jsx'
-import { AudioSheet, CaptionsSheet, ClipSheet, ExportSheet, MediaSheet } from './editor/sheets.jsx'
+import { AudioSheet, CaptionsSheet, ClipSheet, ExportSheet, LooksSheet, MediaSheet } from './editor/sheets.jsx'
 import usePlayback from './editor/usePlayback.js'
 import {
   formatClock, imagePiece, initial, insertAfter, isImage, offsets as offsetsOf, parseClock, removePiece, splitAt,
@@ -12,7 +12,7 @@ import {
 } from './editor/model.js'
 import {
   Aspect, Back, Captions, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
-  Film, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
+  Film, Sparkle, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
 import { getStrip, getWave, loadEdit, probeVideo, saveEdit, videoUrl } from './api.js'
 
@@ -32,7 +32,7 @@ function isPristine (e, duration) {
   const p = e.pieces
   return p.length === 1 && !isImage(p[0]) && !p[0].src && p[0].start < 1e-3 && Math.abs(p[0].end - duration) < 1e-3 &&
     !e.music && !(e.texts && e.texts.length) && !e.look.crop && e.look.canvas === 'original' &&
-    !e.fadeIn && !e.fadeOut && !(e.pieces[0].transition)
+    !e.look.fadeIn && !e.look.fadeOut
 }
 
 /** A saved edit made safe to open: pieces kept inside the clip as it is now. */
@@ -44,6 +44,22 @@ function restoreEdit (saved, duration) {
     .filter((p) => p.end - p.start >= 0.05)
   if (!pieces.length) return null
   return { ...freshEdit(duration), ...e, pieces, look: { ...PLAIN_LOOK, ...(e.look || {}) }, texts: e.texts || [] }
+}
+
+/**
+ * A saved crop put on a clip of another shape: the same output shape and the
+ * same centre, as tall as it was (or as wide, if that no longer fits).
+ */
+function adaptCrop (crop, fromAspect, toAspect) {
+  if (!fromAspect || Math.abs(fromAspect - toAspect) < 0.02) return crop
+  const ratio = (crop.w * fromAspect) / crop.h
+  let h = crop.h
+  let w = (h * ratio) / toAspect
+  if (w > 1) { w = 1; h = toAspect / ratio }
+  if (h > 1) { h = 1; w = ratio / toAspect }
+  const cx = crop.x + crop.w / 2
+  const cy = crop.y + crop.h / 2
+  return { x: Math.min(Math.max(cx - w / 2, 0), 1 - w), y: Math.min(Math.max(cy - h / 2, 0), 1 - h), w, h }
 }
 
 function decodePeaks (b64) {
@@ -542,7 +558,7 @@ export default function Editor ({ video, bucket, onBack }) {
   /** The style of one caption, copied to every caption. */
   function styleAllCaptions (from) {
     const look = { x: from.x, y: from.y, size: from.size, font: from.font, style: from.style, color: from.color, anim: from.anim || 'none', hl: from.hl }
-    commitEdit({ texts: edit.texts.map((x) => (x.caption ? { ...x, ...look } : x)) })
+    commitEdit({ texts: edit.texts.map((x) => (x.caption ? { ...x, ...look } : x)), captionLook: look })
     flash('Every caption now looks and moves like this one')
   }
 
@@ -551,7 +567,7 @@ export default function Editor ({ video, bucket, onBack }) {
     const keep = (edit.texts || []).filter((x) => !x.caption)
     // A caption style already chosen carries over to the new captions.
     const was = (edit.texts || []).find((x) => x.caption)
-    const style = was
+    const style = edit.captionLook ? edit.captionLook : was
       ? { x: was.x, y: was.y, size: was.size, font: was.font, style: was.style, color: was.color, anim: was.anim === 'karaoke' || was.anim ? was.anim : 'none', hl: was.hl }
       : CAPTION_LOOK
     const made = chunks.map((c) => ({ id: newId(), caption: true, text: c.text, start: c.start, end: Math.min(c.end, total), words: c.words, ...CAPTION_LOOK, ...style }))
@@ -589,6 +605,34 @@ export default function Editor ({ video, bucket, onBack }) {
     setSelectedId(piece.id)
     pb.seek(offsetsOf(next)[next.indexOf(piece)], next)
     flash(`Added ${v.name}. Trim it with its white handles, or drag it to move it.`)
+  }
+
+  /* ------------------------------------------------------------- looks */
+
+  // What a new look would save from this edit.
+  const firstCaption = texts.find((x) => x.caption)
+  const lookNow = {
+    ...look,
+    cropAspect: info ? info.width / info.height : 1,
+    caption: edit?.captionLook || (firstCaption
+      ? { x: firstCaption.x, y: firstCaption.y, size: firstCaption.size, font: firstCaption.font, style: firstCaption.style, color: firstCaption.color, anim: firstCaption.anim || 'none', hl: firstCaption.hl }
+      : null)
+  }
+
+  function applyLook (L) {
+    pb.pause()
+    const next = { ...look }
+    if (L.crop) next.crop = adaptCrop(L.crop, L.cropAspect, info.width / info.height)
+    if (L.canvas !== undefined) { next.canvas = L.canvas; next.background = L.background || 'blur' }
+    if (L.fadeIn !== undefined || L.fadeOut !== undefined) { next.fadeIn = L.fadeIn || 0; next.fadeOut = L.fadeOut || 0 }
+    const patch = { look: next }
+    if (L.caption) {
+      patch.captionLook = L.caption
+      patch.texts = (edit.texts || []).map((x) => (x.caption ? { ...x, ...L.caption } : x))
+    }
+    commitEdit(patch)
+    flash(`Used the look “${L.name}”. Undo takes it off.`)
+    setSheet(L.autoCaptions && info.hasAudio ? 'captions-auto' : null)
   }
 
   /* -------------------------------------------------------------- keys */
@@ -880,6 +924,7 @@ export default function Editor ({ video, bucket, onBack }) {
         />
         <Tool icon={<Film />} label="Add clip" onClick={() => { pb.pause(); setSheet('clip-pick') }} disabled={!hist} />
         <span className="ed__tools-sep" />
+        <Tool icon={<Sparkle />} label="Looks" onClick={() => { pb.pause(); setSheet('looks') }} disabled={!hist} />
         <Tool icon={<TextIcon />} label="Text" onClick={addText} disabled={!hist} />
         <Tool
           icon={<Captions />}
@@ -927,8 +972,10 @@ export default function Editor ({ video, bucket, onBack }) {
           onClose={() => setSheet(null)}
         />
       ) : null}
-      {sheet === 'captions' ? (
+      {sheet === 'looks' ? <LooksSheet current={lookNow} onApply={applyLook} onClose={() => setSheet(null)} /> : null}
+      {sheet === 'captions' || sheet === 'captions-auto' ? (
         <CaptionsSheet
+          auto={sheet === 'captions-auto'}
           video={video}
           pieces={pieces}
           existing={texts.filter((x) => x.caption).length}

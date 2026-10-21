@@ -1689,3 +1689,19 @@ kbd {
 .ed__bg { z-index: 0; }
 .ed__texts { z-index: 6; }
 .crop { z-index: 7; }
+
+.sheet__sub { margin: 18px 0 4px; font-size: 14px; font-weight: 550; }
+.opt--off { opacity: 0.45; cursor: default; }
+.looklist { display: flex; flex-direction: column; gap: 6px; max-height: 220px; margin-top: 12px; overflow-y: auto; }
+.lookitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.lookitem__text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.lookitem__text strong { font-size: 13.5px; font-weight: 550; }
+.lookitem__text span { overflow: hidden; color: var(--faint); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }

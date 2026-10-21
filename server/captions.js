@@ -260,7 +260,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
     const body = req.body || {}
     const model = MODELS[body.model] ? body.model : 'base'
-    const names = String(body.names || '').replace(/s+/g, ' ').trim().slice(0, 400)
+    const names = String(body.names || '').replace(/\s+/g, ' ').trim().slice(0, 400)
     const translate = Boolean(body.translate)
     if (!(await cliReady()) || !modelReady(model)) throw httpError(409, 'Captions need a one-time download first')
 

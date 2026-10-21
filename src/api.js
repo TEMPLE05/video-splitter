@@ -94,3 +94,10 @@ export const exportStart = (payload) => request('/api/export', json('POST', { ..
 export const exportJob = (id) => request('/api/export/job/' + encodeURIComponent(id))
 
 export const exportStop = (id) => request('/api/export/job/' + encodeURIComponent(id) + '/stop', { method: 'POST' })
+
+// Saved looks: a crop, shape, caption style and fades, kept under a name.
+export const listLooks = () => request('/api/looks')
+
+export const saveLook = (look) => request('/api/looks', json('POST', look))
+
+export const deleteLook = (id) => request('/api/looks/' + encodeURIComponent(id), { method: 'DELETE' })

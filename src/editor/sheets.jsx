@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatClock, isImage } from './model.js'
 import { frameSize } from './frame.js'
-import { drawText, textFrames } from './text.js'
+import { ANIMS, FONTS, STYLES, drawText, textFrames } from './text.js'
 import { Choice } from './panels.jsx'
 import { Captions, Check, Download, Music } from '../icons.jsx'
 import {
-  captionsStatus, exportJob, exportStart, exportStop, getState, installCaptions, listBucket, listMedia, pullAudio,
-  thumbUrl, transcribe, uploadMedia, videoUrl
+  captionsStatus, deleteLook, exportJob, exportStart, exportStop, getState, installCaptions, listBucket, listLooks,
+  listMedia, pullAudio, saveLook, thumbUrl, transcribe, uploadMedia, videoUrl
 } from '../api.js'
 
 export function useEscape (onClose, busy) {
@@ -506,7 +506,7 @@ export function AudioSheet ({ video, bucket, onClose }) {
  * first time, it offers the one-off download of the program and its language
  * model; after that it just listens and returns timed words.
  */
-export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
+export function CaptionsSheet ({ video, pieces, existing, onWords, onClose, auto }) {
   const [st, setSt] = useState(null)
   const [model, setModel] = useState('base')
   // Remembered between clips: the names you keep needing are the same ones.
@@ -516,7 +516,12 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
   const alive = useRef(true)
+  const startedAuto = useRef(false)
   useEscape(onClose, false)
+  useEffect(() => {
+    if (st && startedAuto.current && phase === 'idle') { startedAuto.current = false; go() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [st])
 
   useEffect(() => {
     alive.current = true
@@ -529,6 +534,8 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
           setModel(s.install.model)
           setPhase('installing')
           watchInstall(s.install.model)
+        } else if (auto && s.program && (s.models.base.ready || s.models.small.ready)) {
+          startedAuto.current = true
         }
       })
       .catch((err) => setError(err.message))
@@ -678,6 +685,129 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
             <Captions size={16} />
             {working ? 'Working…' : ready ? 'Make captions' : 'Download and make captions'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** A short description of what a saved look changes. */
+export function describeLook (L) {
+  const parts = []
+  if (L.crop) parts.push('crop ' + Math.round((L.crop.w * (L.cropAspect || 1) / L.crop.h) * 100) / 100 + ':1')
+  if (L.canvas && L.canvas !== 'original') parts.push(`${L.canvas} with a ${L.background === 'black' ? 'black' : 'blurred'} fill`)
+  else if (L.canvas === 'original') parts.push('original shape')
+  if (L.caption) parts.push(`captions in ${FONTS[L.caption.font]?.label || L.caption.font}, ${STYLES[L.caption.style] || L.caption.style}${L.caption.anim && L.caption.anim !== 'none' ? ', ' + (ANIMS[L.caption.anim] || L.caption.anim).toLowerCase() : ''}`)
+  if (L.fadeIn || L.fadeOut) parts.push(`fade ${L.fadeIn ? 'in ' + L.fadeIn + ' s' : ''}${L.fadeIn && L.fadeOut ? ', ' : ''}${L.fadeOut ? 'out ' + L.fadeOut + ' s' : ''}`)
+  if (L.autoCaptions) parts.push('makes captions')
+  return parts.join(' · ') || 'nothing yet'
+}
+
+/**
+ * Saved looks: put a saved crop, shape, caption style and fades on this clip
+ * in one go, or save how this edit looks under a name.
+ */
+export function LooksSheet ({ current, onApply, onClose }) {
+  const [looks, setLooks] = useState(null)
+  const [name, setName] = useState('')
+  // Read straight from the box on save, so the last key typed always counts.
+  const nameRef = useRef(null)
+  const has = {
+    crop: Boolean(current.crop),
+    canvas: current.canvas !== 'original',
+    caption: Boolean(current.caption),
+    fades: Boolean(current.fadeIn || current.fadeOut)
+  }
+  const [pick, setPick] = useState({ ...has, autoCaptions: Boolean(current.caption) })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  useEscape(onClose, busy)
+
+  useEffect(() => {
+    listLooks().then((d) => setLooks(d.looks)).catch((err) => { setLooks([]); setError(err.message) })
+  }, [])
+
+  async function save () {
+    setBusy(true)
+    setError(null)
+    try {
+      const body = { name: nameRef.current ? nameRef.current.value : name }
+      if (pick.crop && has.crop) Object.assign(body, { crop: current.crop, cropAspect: current.cropAspect })
+      if (pick.canvas) Object.assign(body, { canvas: current.canvas, background: current.background })
+      if (pick.caption && has.caption) body.caption = current.caption
+      if (pick.fades && has.fades) Object.assign(body, { fadeIn: current.fadeIn || 0, fadeOut: current.fadeOut || 0 })
+      body.autoCaptions = Boolean(pick.autoCaptions)
+      const d = await saveLook(body)
+      setLooks(d.looks)
+      setName('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove (id) {
+    try {
+      setLooks((await deleteLook(id)).looks)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const box = (key, label, sub, enabled = true) => (
+    <label className={'opt' + (enabled ? '' : ' opt--off')}>
+      <input type="checkbox" checked={Boolean(pick[key]) && enabled} disabled={!enabled || busy} onChange={(e) => setPick((p) => ({ ...p, [key]: e.target.checked }))} />
+      <span>{label}<em>{sub}</em></span>
+    </label>
+  )
+
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onClose()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Looks</h2>
+        <p className="sheet__body">
+          A look is a saved crop, shape, caption style and fades. Put one on a clip and it all
+          happens at once; it can also make the captions for you. Undo takes it off again.
+        </p>
+
+        <div className="looklist">
+          {looks === null ? <p className="sheet__body">Loading…</p> : null}
+          {looks && !looks.length ? <p className="sheet__body">No saved looks yet. Set up a clip the way you like it, then save its look below.</p> : null}
+          {(looks || []).map((L) => (
+            <div key={L.id} className="lookitem">
+              <div className="lookitem__text">
+                <strong>{L.name}</strong>
+                <span>{describeLook(L)}</span>
+              </div>
+              <button className="ed__ghost ed__ghost--bad" onClick={() => remove(L.id)} disabled={busy} aria-label={'Remove ' + L.name}>Remove</button>
+              <button className="ed__go" onClick={() => onApply(L)} disabled={busy}>Use</button>
+            </div>
+          ))}
+        </div>
+
+        <h3 className="sheet__sub">Save this clip's look</h3>
+        {box('crop', 'The crop', has.crop ? 'Adapts to clips of a different shape: same output shape, same centre.' : 'This clip is not cropped.', has.crop)}
+        {box('canvas', 'The shape and fill', has.canvas ? `${current.canvas} with a ${current.background === 'black' ? 'black' : 'blurred'} fill` : 'Keep each clip in its own shape.')}
+        {box('caption', 'The caption style', has.caption ? 'Font, style, colour, size, place and animation of the captions.' : 'Make captions and style one first to include this.', has.caption)}
+        {box('fades', 'The fades', has.fades ? `In ${current.fadeIn || 0} s, out ${current.fadeOut || 0} s` : 'No fades set on this clip.', has.fades)}
+        {box('autoCaptions', 'Make captions automatically', 'When the look is used, captions are made straight away, in the saved style.')}
+        <div className="ed__textrow sheet__row">
+          <input
+            ref={nameRef}
+            className="ed__field ed__field--wide ed__grow"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Name it, like TikTok vertical"
+            disabled={busy}
+            onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) save() }}
+          />
+          <button className="ed__go" onClick={save} disabled={busy || !name.trim()}>Save look</button>
+        </div>
+
+        {error ? <p className="sheet__error">{error}</p> : null}
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={busy}>Close</button>
         </div>
       </div>
     </div>

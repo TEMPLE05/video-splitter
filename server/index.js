@@ -419,6 +419,63 @@ app.delete('/api/source', wrap(async (_req, res) => {
   res.json(await snapshot())
 }))
 
+/* ------------------------------------------------------------- saved looks */
+
+/**
+ * Looks: a crop, a shape and fill, a caption style and fades, saved under a
+ * name to put on any clip in one go. Kept in the config file with the
+ * buckets, since they belong to the person rather than to one clip.
+ */
+const num = (v, lo, hi, d = 0) => { const n = Number(v); return Number.isFinite(n) ? Math.min(Math.max(n, lo), hi) : d }
+
+function cleanLook (b) {
+  const name = String(b.name || '').replace(/\s+/g, ' ').trim().slice(0, 40)
+  if (!name) throw httpError(400, 'Give the look a name')
+  const look = { id: String(b.id || crypto.randomUUID()), name, savedAt: new Date().toISOString() }
+  if (b.crop && typeof b.crop === 'object') {
+    look.crop = { x: num(b.crop.x, 0, 1), y: num(b.crop.y, 0, 1), w: num(b.crop.w, 0.05, 1, 1), h: num(b.crop.h, 0.05, 1, 1) }
+    look.cropAspect = num(b.cropAspect, 0.1, 10, 1)
+  }
+  if (b.canvas !== undefined) {
+    look.canvas = ASPECTS[b.canvas] ? b.canvas : 'original'
+    look.background = b.background === 'black' ? 'black' : 'blur'
+  }
+  if (b.caption && typeof b.caption === 'object') {
+    const c = b.caption
+    look.caption = {
+      x: num(c.x, 0, 1, 0.5), y: num(c.y, 0, 1, 0.78), size: num(c.size, 0.02, 0.2, 0.05),
+      font: String(c.font || 'heavy').slice(0, 20), style: String(c.style || 'outline').slice(0, 20),
+      color: /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : '#ffffff', anim: String(c.anim || 'none').slice(0, 20),
+      hl: /^#[0-9a-f]{6}$/i.test(c.hl) ? c.hl : '#ffe14d'
+    }
+  }
+  if (b.fadeIn !== undefined || b.fadeOut !== undefined) {
+    look.fadeIn = num(b.fadeIn, 0, 5)
+    look.fadeOut = num(b.fadeOut, 0, 5)
+  }
+  look.autoCaptions = Boolean(b.autoCaptions)
+  return look
+}
+
+app.get('/api/looks', wrap(async (_req, res) => {
+  res.json({ looks: config.looks || [] })
+}))
+
+app.post('/api/looks', wrap(async (req, res) => {
+  const look = cleanLook(req.body || {})
+  const looks = (config.looks || []).filter((l) => l.id !== look.id && l.name.toLowerCase() !== look.name.toLowerCase())
+  if (looks.length >= 50) throw httpError(400, 'That is a lot of looks; remove one first')
+  config.looks = [...looks, look]
+  await saveConfig()
+  res.json({ looks: config.looks, saved: look })
+}))
+
+app.delete('/api/looks/:id', wrap(async (req, res) => {
+  config.looks = (config.looks || []).filter((l) => l.id !== req.params.id)
+  await saveConfig()
+  res.json({ looks: config.looks })
+}))
+
 app.post('/api/buckets', wrap(async (req, res) => {
   const name = String((req.body && req.body.name) || '').trim()
   if (!name) throw httpError(400, 'A bucket name is required')
