@@ -201,7 +201,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     return { words, language: json.result?.language || null }
   }
 
-  async function transcribe (job, file, pieces, key, cacheFile) {
+  async function transcribe (job, file, pieces, key, cacheFile, { names, translate }) {
     const base = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}`)
     const wav = base + '.wav'
     try {
@@ -211,7 +211,10 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       const threads = String(Math.max(1, Math.min(8, os.cpus().length)))
       await new Promise((resolve, reject) => {
         const p = spawn(cli, ['-m', modelPath(key), '-f', wav, '-l', 'auto', '-t', threads,
-          '-ml', '1', '-sow', '-oj', '-of', base, '-pp', '-np'], { windowsHide: true, cwd: isWin ? path.dirname(cli) : undefined })
+          '-ml', '1', '-sow', '-oj', '-of', base, '-pp', '-np',
+          // Names and unusual words, so Whisper leans towards spelling them right.
+          ...(names ? ['--prompt', 'Names: ' + names + '.'] : []),
+          ...(translate ? ['-tr'] : [])], { windowsHide: true, cwd: isWin ? path.dirname(cli) : undefined })
         let err = ''
         p.stderr.on('data', (d) => {
           err = (err + d).slice(-4000)
@@ -222,6 +225,23 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
         p.on('close', (code) => (code === 0 ? resolve() : reject(new Error('Whisper failed: ' + (err.trim().split('\n').pop() || code)))))
       })
       const result = wordsFrom(JSON.parse(await fsp.readFile(base + '.json', 'utf8')))
+      // A word that sounds like a listed name (same first letter, a letter
+      // or two different, like "Messy" for "Messi") takes the listed spelling.
+      const listed = String(names || '').split(/[,\n]/).map((n) => n.trim()).filter((n) => n && !/\s/.test(n))
+      if (listed.length) {
+        for (const w of result.words) {
+          const m = /^([^\p{L}\p{N}]*)([\p{L}\p{N}'’-]+)([^\p{L}\p{N}]*)$/u.exec(w.w)
+          if (!m) continue
+          const heard = m[2].toLowerCase()
+          const hit = listed.find((n) => {
+            const want = n.toLowerCase()
+            if (heard === want) return true
+            if (heard[0] !== want[0] || want.length < 4) return false
+            return editDistance(heard, want) <= (want.length >= 7 ? 2 : 1)
+          })
+          if (hit) w.w = m[1] + hit + m[3]
+        }
+      }
       await fsp.mkdir(path.dirname(cacheFile), { recursive: true })
       await fsp.writeFile(cacheFile, JSON.stringify(result))
       return result
@@ -240,6 +260,8 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
     const body = req.body || {}
     const model = MODELS[body.model] ? body.model : 'base'
+    const names = String(body.names || '').replace(/s+/g, ' ').trim().slice(0, 400)
+    const translate = Boolean(body.translate)
     if (!(await cliReady()) || !modelReady(model)) throw httpError(409, 'Captions need a one-time download first')
 
     const file = resolveInSource(decodeId(String(body.id)))
@@ -269,7 +291,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     if (!pieces.length) throw httpError(400, 'Nothing to caption')
 
     const key = crypto.createHash('sha1')
-      .update(['captions-v1', file, st.size, st.mtimeMs, model, JSON.stringify(pieces)].join('|')).digest('hex')
+      .update(['captions-v2', file, st.size, st.mtimeMs, model, names, translate, JSON.stringify(pieces)].join('|')).digest('hex')
     const cacheFile = path.join(CAP_DIR, key.slice(0, 2), key + '.json')
     try {
       const cached = JSON.parse(await fsp.readFile(cacheFile, 'utf8'))
@@ -287,10 +309,25 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       job = { progress: 0 }
       jobs.set(key, job)
       // One at a time: Whisper already uses every core.
-      queue = queue.then(() => transcribe(job, file, pieces, model, cacheFile))
+      queue = queue.then(() => transcribe(job, file, pieces, model, cacheFile, { names, translate }))
         .then(() => { jobs.delete(key) })
         .catch((err) => { job.error = err.message || 'Captions failed' })
     }
     res.json({ state: 'running', progress: job.progress })
   }))
+}
+
+/** Letters to change, add or remove to turn one word into another. */
+function editDistance (a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]
+    row[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const keep = row[j]
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1))
+      prev = keep
+    }
+  }
+  return row[b.length]
 }

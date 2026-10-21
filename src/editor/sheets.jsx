@@ -509,6 +509,9 @@ export function AudioSheet ({ video, bucket, onClose }) {
 export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
   const [st, setSt] = useState(null)
   const [model, setModel] = useState('base')
+  // Remembered between clips: the names you keep needing are the same ones.
+  const [names, setNames] = useState(() => { try { return localStorage.getItem('vs.captionNames') || '' } catch { return '' } })
+  const [translate, setTranslate] = useState(false)
   const [phase, setPhase] = useState('idle')
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
@@ -557,9 +560,12 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
       }
       setPhase('listening')
       setProgress(0)
+      try { localStorage.setItem('vs.captionNames', names) } catch { /* private window */ }
       const payload = {
         id: video.id,
         model,
+        names,
+        translate,
         segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { ...(p.src && p.src !== video.id ? { src: p.src } : {}), start: p.start, end: p.end }))
       }
       for (;;) {
@@ -623,6 +629,29 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
               </button>
             ))}
           </div>
+        ) : null}
+
+        {st && st.supported ? (
+          <>
+            <label className="ed__field-row">
+              <span>Names and words to spell right</span>
+              <input
+                className="ed__field ed__field--wide"
+                value={names}
+                onChange={(e) => setNames(e.target.value)}
+                placeholder="Messi, Inter Miami, Ramadan"
+                disabled={working}
+                spellCheck={false}
+              />
+            </label>
+            <label className="opt">
+              <input type="checkbox" checked={translate} onChange={(e) => setTranslate(e.target.checked)} disabled={working} />
+              <span>
+                Translate into English
+                <em>For speech in another language: the captions come out in English instead.</em>
+              </span>
+            </label>
+          </>
         ) : null}
 
         {phase === 'installing' && inst ? (
