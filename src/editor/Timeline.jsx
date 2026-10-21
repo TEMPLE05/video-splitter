@@ -36,20 +36,29 @@ const DRAG_SLOP = 4
 const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
 const FONT = "11px Roboto, 'Segoe UI', sans-serif"
 
-/** Items stacked into rows so overlapping ones sit one above the other. */
-function stackRows (items, startOf, endOf, max) {
-  const ends = []
+/**
+ * Lanes, as CapCut has them: every text and every sound sits in a lane, one
+ * under another. An item keeps the lane it was put in; one from an older edit
+ * without a lane takes the first lane free at its time.
+ */
+export function lanesOf (items, startOf, endOf) {
   const rows = new Map()
-  for (const t of [...(items || [])].sort((a, b) => startOf(a) - startOf(b))) {
-    let r = ends.findIndex((e) => e <= startOf(t) + 1e-6)
-    if (r < 0) { r = ends.length; ends.push(0) }
-    ends[r] = endOf(t)
-    rows.set(t.id, Math.min(r, max - 1))
+  const placed = []
+  const free = (lane, a, b) => !placed.some((p) => p.lane === lane && p.a < b - 1e-6 && p.b > a + 1e-6)
+  for (const t of items || []) {
+    if (Number.isInteger(t.lane) && t.lane >= 0) { rows.set(t.id, t.lane); placed.push({ lane: t.lane, a: startOf(t), b: endOf(t) }) }
   }
-  return { rows, count: Math.max(1, Math.min(max, ends.length)) }
+  for (const t of [...(items || [])].filter((x) => !rows.has(x.id)).sort((a, b) => startOf(a) - startOf(b))) {
+    let lane = 0
+    while (!free(lane, startOf(t), endOf(t))) lane++
+    rows.set(t.id, lane)
+    placed.push({ lane, a: startOf(t), b: endOf(t) })
+  }
+  return { rows, count: Math.max(1, ...[...rows.values()].map((r) => r + 1)) }
 }
-const textRows = (texts) => stackRows(texts, (t) => t.start, (t) => t.end, MAX_ROWS)
-const soundRows = (sounds) => stackRows(sounds, (x) => x.at, (x) => x.at + x.len, 2)
+const textRows = (texts) => lanesOf(texts, (t) => t.start, (t) => t.end)
+const soundRows = (sounds) => lanesOf(sounds, (x) => x.at, (x) => x.at + x.len)
+const GUTTER = 66
 
 /** Sound rows decide where the text rows start. */
 function setLanes (sounds) {
@@ -165,6 +174,7 @@ export default function Timeline (props) {
     setLanes(live.current.sounds)
     const { p, rects, sbars, bars } = layout()
     if (y < CLIP_TOP - 2) return { zone: 'ruler' }
+    if (x <= GUTTER && y >= MUSIC_TOP - 3) return { zone: y >= TEXT_TOP - 2 ? 'addtext' : 'addmusic' }
     if (y >= TEXT_TOP - 2) {
       // Selected first, so its edges win over a neighbour's.
       const order = [...bars].sort((a, b) => (b.t.id === p.selectedTextId) - (a.t.id === p.selectedTextId))
@@ -475,6 +485,27 @@ export default function Timeline (props) {
       ctx.fillText('T  Add text', cx + 10, TEXT_TOP + TEXT_H / 2 + 0.5)
     }
 
+    // Lane heads at the left edge: a + to add a sound, and one to add text.
+    const head = (top, rows, rowH, label, rgb) => {
+      ctx.fillStyle = '#050506'
+      ctx.fillRect(0, top - 3, GUTTER, rows * rowH + 3)
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+      ctx.beginPath(); ctx.moveTo(GUTTER + 0.5, top - 3); ctx.lineTo(GUTTER + 0.5, top + rows * rowH); ctx.stroke()
+      // A filled pill in the lane's own colour, so it reads as a button.
+      const h = Math.min(rowH - 3, 20)
+      ctx.beginPath()
+      ctx.roundRect(5, top, GUTTER - 11, h, h / 2)
+      ctx.fillStyle = `rgba(${rgb}, 0.9)`
+      ctx.fill()
+      ctx.fillStyle = '#101114'
+      ctx.font = `600 ${h < 18 ? 10 : 11}px Roboto, 'Segoe UI', sans-serif`
+      ctx.textAlign = 'center'
+      ctx.fillText('+ ' + label, 5 + (GUTTER - 11) / 2, top + h / 2 + 0.5)
+      ctx.font = FONT
+    }
+    head(MUSIC_TOP, SOUND_ROWS, MUSIC_ROW, 'Sound', '94, 200, 140')
+    head(TEXT_TOP, textRows(p.texts).count, TEXT_ROW, 'Text', '255, 193, 77')
+
     // The playhead, fixed in the middle.
     ctx.fillStyle = '#fff'
     ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
@@ -504,6 +535,22 @@ export default function Timeline (props) {
     return () => c.removeEventListener('wheel', onWheel)
   }, [])
 
+  /** The lane under the pointer while dragging a bar; one past the last starts a new lane. */
+  function laneAt (kind, d, e) {
+    if (d.edge !== 'move') return undefined
+    const p = live.current
+    setDims(Boolean(p.compact))
+    setLanes(p.sounds)
+    const { y } = pos(e)
+    const top = kind === 'text' ? TEXT_TOP : MUSIC_TOP
+    const row = kind === 'text' ? TEXT_ROW : MUSIC_ROW
+    // Counted without the bar being dragged, so the lanes on offer do not
+    // grow as it moves down: one past the last is as far as it can go.
+    const others = (kind === 'text' ? p.texts : p.sounds || []).filter((x) => x.id !== d.id)
+    const count = others.length ? (kind === 'text' ? textRows(others).count : soundRows(others).count) : 0
+    return Math.min(Math.max(Math.floor((y - top) / row), 0), count)
+  }
+
   const pos = (e) => {
     const r = canvasRef.current.getBoundingClientRect()
     return { x: e.clientX - r.left, y: e.clientY - r.top }
@@ -525,13 +572,13 @@ export default function Timeline (props) {
       return
     }
     if (hit.zone === 'text') {
-      drag.current = { mode: 'text', id: hit.item.id, edge: hit.edge, start: hit.item.start, end: hit.item.end, x0: e.clientX, moved: false }
+      drag.current = { mode: 'text', id: hit.item.id, edge: hit.edge, start: hit.item.start, end: hit.item.end, x0: e.clientX, y0: e.clientY, moved: false }
       p.onText({ id: hit.item.id, phase: 'start' })
       return
     }
     if (hit.zone === 'sound') {
       const sd = hit.snd
-      drag.current = { mode: 'sound', id: sd.id, edge: hit.edge, at: sd.at, from: sd.from, len: sd.len, dur: sd.duration, x0: e.clientX, moved: false }
+      drag.current = { mode: 'sound', id: sd.id, edge: hit.edge, at: sd.at, from: sd.from, len: sd.len, dur: sd.duration, x0: e.clientX, y0: e.clientY, moved: false }
       p.onSound({ id: sd.id, phase: 'start' })
       return
     }
@@ -557,15 +604,15 @@ export default function Timeline (props) {
       return
     }
     if (d.mode === 'text') {
-      if (!d.moved && Math.abs(dx) < DRAG_SLOP) return
+      if (!d.moved && Math.abs(dx) < DRAG_SLOP && Math.abs(e.clientY - d.y0) < DRAG_SLOP) return
       d.moved = true
-      p.onText({ id: d.id, ...textSpan(d, dx / p.pps), phase: 'move' })
+      p.onText({ id: d.id, ...textSpan(d, dx / p.pps), lane: laneAt('text', d, e), phase: 'move' })
       return
     }
     if (d.mode === 'sound') {
-      if (!d.moved && Math.abs(dx) < DRAG_SLOP) return
+      if (!d.moved && Math.abs(dx) < DRAG_SLOP && Math.abs(e.clientY - d.y0) < DRAG_SLOP) return
       d.moved = true
-      p.onSound({ id: d.id, ...soundSpan(d, dx / p.pps), phase: 'move' })
+      p.onSound({ id: d.id, ...soundSpan(d, dx / p.pps), lane: laneAt('sound', d, e), phase: 'move' })
       return
     }
     if (d.mode === 'pendingmove' && Math.abs(dx) > DRAG_SLOP) d.mode = 'reorder'
@@ -594,12 +641,12 @@ export default function Timeline (props) {
     }
     if (d.mode === 'sound') {
       if (!d.moved) p.onSound({ id: d.id, phase: 'click' })
-      else p.onSound({ id: d.id, ...soundSpan(d, (e.clientX - d.x0) / p.pps), phase: cancelled ? 'cancel' : 'end' })
+      else p.onSound({ id: d.id, ...soundSpan(d, (e.clientX - d.x0) / p.pps), lane: laneAt('sound', d, e), phase: cancelled ? 'cancel' : 'end' })
       return
     }
     if (d.mode === 'text') {
       if (!d.moved) p.onText({ id: d.id, phase: 'click' })
-      else p.onText({ id: d.id, ...textSpan(d, (e.clientX - d.x0) / p.pps), phase: cancelled ? 'cancel' : 'end' })
+      else p.onText({ id: d.id, ...textSpan(d, (e.clientX - d.x0) / p.pps), lane: laneAt('text', d, e), phase: cancelled ? 'cancel' : 'end' })
       return
     }
     e.currentTarget.style.cursor = 'grab'
@@ -626,7 +673,7 @@ export default function Timeline (props) {
   }
 
   return (
-    <div className="timeline" ref={boxRef}>
+    <div className={'timeline' + (props.compact ? ' is-compact' : '')} ref={boxRef}>
       <canvas
         ref={canvasRef}
         className="timeline__canvas"

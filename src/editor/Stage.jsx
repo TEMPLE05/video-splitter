@@ -63,7 +63,8 @@ export default function Stage ({ info, clips, mainId, look, cropping, cropRatio,
   const canvasAspect = !cropping && ASPECTS[look.canvas]
   const aspect = canvasAspect || vw / vh
   const frame = contain(aspect, box)
-  const blur = look.background !== 'black'
+  const picture = look.background === 'image' && look.bgImage ? look.bgImage : null
+  const blur = look.background !== 'black' && !picture
 
   /** Where a source sits in the frame, and how its video is placed inside. */
   function placeFor (srcId) {
@@ -185,6 +186,7 @@ export default function Stage ({ info, clips, mainId, look, cropping, cropRatio,
   return (
     <div className="ed__stage" ref={boxRef} onClick={cropping ? undefined : onClick}>
       <div className="ed__frame" style={{ width: frame.w, height: frame.h }} data-layer={pb.layer} data-mix={pb.mix ? pb.mix.type + ':' + pb.mix.m.toFixed(2) : ''}>
+        {picture && !cropping ? <img className="ed__bg ed__bg--pic" src={videoUrl(picture)} alt="" /> : null}
         {blur && bgVideo !== null ? <canvas ref={bgRef} className="ed__bg" /> : null}
         {blur && bgStill ? <img className="ed__bg ed__bg--img" src={videoUrl(bgStill)} alt="" /> : null}
         {[pb.aRef, pb.bRef].map((ref, k) => {

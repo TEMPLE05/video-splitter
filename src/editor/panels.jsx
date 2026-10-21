@@ -90,7 +90,7 @@ export function PartsSplit ({ replacing, total, onSubmit, onClose }) {
  * One added sound: how loud, when it starts on the timeline, and where in the
  * sound file it starts. Its length is set by dragging the ends of its bar.
  */
-export function SoundPanel ({ sound, total, clipSound, canClipSound, onClipSound, onChange, onAnother, onRemove, onClose }) {
+export function SoundPanel ({ sound, total, clipSound, canClipSound, onClipSound, onChange, onAnother, onAfter, onRemove, onClose }) {
   const pct = Math.round(sound.volume * 100)
   const room = (sound.duration || Infinity)
   return (
@@ -110,7 +110,8 @@ export function SoundPanel ({ sound, total, clipSound, canClipSound, onClipSound
           <span className="ed__vol-n">{pct}%</span>
         </label>
         <span className="ed__grow" />
-        <button className="ed__ghost" onClick={onAnother}>+ Another sound</button>
+        <button className="ed__ghost" onClick={onAfter} title="The next sound starts when this one ends">+ Sound after this</button>
+        <button className="ed__ghost" onClick={onAnother} title="Another sound at the playhead">+ Sound here</button>
         <button className="ed__ghost ed__ghost--bad" onClick={onRemove}>Remove</button>
         <button className="ed__go" onClick={onClose}>Done</button>
       </div>
@@ -151,7 +152,7 @@ function TimeBox ({ value, onCommit, label }) {
   )
 }
 
-export function TextPanel ({ item, fresh, captions, total, onChange, onStyleAll, onDelete, onClose, onUndo, onRedo }) {
+export function TextPanel ({ item, fresh, captions, total, onChange, onStyleAll, onDelete, onClose, onUndo, onRedo, onBelow, onDuplicate }) {
   const [tab, setTab] = useState('font')
   const [, setFontsChanged] = useState(0)
   const [fontError, setFontError] = useState(null)
@@ -206,6 +207,8 @@ export function TextPanel ({ item, fresh, captions, total, onChange, onStyleAll,
             aria-label="Text size"
           />
         </label>
+        <button className="ed__ghost" onClick={onBelow} title="A new line under this one, appearing a second after it">+ Text below</button>
+        <button className="ed__ghost" onClick={onDuplicate} title="A copy right after this one, same place and style (D)">Duplicate</button>
         <button className="ed__ghost ed__ghost--bad" onClick={onDelete}>Delete</button>
         <button className="ed__go" onClick={onClose}>Done</button>
       </div>

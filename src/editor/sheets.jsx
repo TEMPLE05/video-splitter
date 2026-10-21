@@ -22,7 +22,7 @@ export function useEscape (onClose, busy) {
  * anywhere on the computer, which is copied into the bucket so the edit (and
  * you) can find it again.
  */
-export function MediaSheet ({ kind, bucket, onPick, onClose }) {
+export function MediaSheet ({ kind, bucket, onPick, onClose, forFill }) {
   const [files, setFiles] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -31,7 +31,7 @@ export function MediaSheet ({ kind, bucket, onPick, onClose }) {
   useEscape(onClose, busy)
   const audio = kind === 'audio'
   const secs = Number(seconds)
-  const secsOk = audio || (secs >= 0.5 && secs <= 600)
+  const secsOk = audio || forFill || (secs >= 0.5 && secs <= 600)
 
   useEffect(() => {
     let cancelled = false
@@ -58,13 +58,15 @@ export function MediaSheet ({ kind, bucket, onPick, onClose }) {
   return (
     <div className="sheetwrap" onClick={() => !busy && onClose()}>
       <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
-        <h2 className="sheet__title">{audio ? 'Add sound' : 'Add a picture'}</h2>
+        <h2 className="sheet__title">{audio ? 'Add sound' : forFill ? 'Picture fill' : 'Add a picture'}</h2>
         <p className="sheet__body">
           {audio
             ? 'It plays under the whole edit. The clip\'s own sound is turned off, so it replaces it; you can turn it back on to mix the two.'
-            : 'It goes after the selected piece, or at the end, and shows for as long as you choose.'}
+            : forFill
+              ? 'It fills the space around the video, cropped to the shape of the frame. Choose a canvas shape for there to be space to fill.'
+              : 'It goes after the selected piece, or at the end, and shows for as long as you choose.'}
         </p>
-        {!audio ? (
+        {!audio && !forFill ? (
           <label className="ed__secs">
             Show for
             <input className="ed__field ed__field--n" type="number" min="0.5" max="600" step="0.5" value={seconds} onChange={(e) => setSeconds(e.target.value)} />
@@ -82,7 +84,7 @@ export function MediaSheet ({ kind, bucket, onPick, onClose }) {
           ) : null}
           {(files || []).map((m) => (
             <button key={m.id} className="mediaitem" onClick={() => pick(m)} disabled={busy || !secsOk}>
-              {audio ? <Music size={16} /> : <img className="mediaitem__thumb" src={videoUrl(m.id)} alt="" loading="lazy" />}
+              {audio ? <Music size={16} /> : <img className="mediaitem__thumb" src={thumbUrl(m.id)} alt="" loading="lazy" decoding="async" />}
               <span className="mediaitem__name">{m.name}</span>
               <span className="mediaitem__where">{m.folder ? m.folder + ' folder' : bucket.name}</span>
             </button>
@@ -220,7 +222,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
       setProgress(0)
       const { job } = await exportStart({
         overlays,
-        id: video.id,
+        ...(video.project ? { project: video.project.id } : { id: video.id }),
         segments: segmentsOf(pieces, video.id),
         join: mode === 'join' || gif,
         stripAudio: soundOff,
@@ -506,12 +508,15 @@ export function AudioSheet ({ video, bucket, onClose }) {
  * first time, it offers the one-off download of the program and its language
  * model; after that it just listens and returns timed words.
  */
-export function CaptionsSheet ({ video, pieces, existing, onWords, onClose, auto }) {
+export function CaptionsSheet ({ video, pieces, sounds = [], clipSound = true, existing, onWords, onClose, auto }) {
   const [st, setSt] = useState(null)
   const [model, setModel] = useState('base')
   // Remembered between clips: the names you keep needing are the same ones.
   const [names, setNames] = useState(() => { try { return localStorage.getItem('vs.captionNames') || '' } catch { return '' } })
   const [translate, setTranslate] = useState(false)
+  // What to listen to: the clips' own sound and the added sounds, such as a voice-over.
+  const [listenClip, setListenClip] = useState(clipSound)
+  const [listenSounds, setListenSounds] = useState(sounds.length > 0)
   const [phase, setPhase] = useState('idle')
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState(null)
@@ -569,7 +574,9 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose, auto
       setProgress(0)
       try { localStorage.setItem('vs.captionNames', names) } catch { /* private window */ }
       const payload = {
-        id: video.id,
+        ...(video.project ? { project: video.project.id } : { id: video.id }),
+        sounds: listenSounds ? sounds.map((x) => ({ id: x.media, at: x.at, from: x.from, len: x.len, volume: x.volume })) : [],
+        clipSound: listenClip,
         model,
         names,
         translate,
@@ -651,6 +658,14 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose, auto
                 spellCheck={false}
               />
             </label>
+            {sounds.length ? (
+              <div className="ed__textrow sheet__row">
+                <span className="ed__panel-label ed__nogrow">Listen to</span>
+                <Choice on={listenClip} onClick={() => setListenClip((v) => !v)} disabled={working}>The clips' own sound</Choice>
+                <Choice on={listenSounds} onClick={() => setListenSounds((v) => !v)} disabled={working}>Added sounds ({sounds.length})</Choice>
+                <span className="ed__panel-hint">Leave songs out to caption only a voice-over.</span>
+              </div>
+            ) : null}
             <label className="opt">
               <input type="checkbox" checked={translate} onChange={(e) => setTranslate(e.target.checked)} disabled={working} />
               <span>
@@ -697,6 +712,7 @@ export function describeLook (L) {
   if (L.crop) parts.push('crop ' + Math.round((L.crop.w * (L.cropAspect || 1) / L.crop.h) * 100) / 100 + ':1')
   if (L.canvas && L.canvas !== 'original') parts.push(`${L.canvas} with a ${L.background === 'black' ? 'black' : 'blurred'} fill`)
   else if (L.canvas === 'original') parts.push('original shape')
+  if (L.canvas && L.canvas !== 'original' && L.background === 'image') parts[parts.length - 1] = `${L.canvas} with a picture fill`
   if (L.caption) {
     const moves = Object.values(animsOf(L.caption)).filter((a) => a !== 'none').map((a) => (ANIMS[a] || a).toLowerCase())
     parts.push(`captions in ${fontOf(L.caption.font).label}, ${STYLES[L.caption.style] || L.caption.style}${moves.length ? ', ' + moves.join(' and ') : ''}`)
@@ -736,7 +752,7 @@ export function LooksSheet ({ current, onApply, onClose }) {
     try {
       const body = { name: nameRef.current ? nameRef.current.value : name }
       if (pick.crop && has.crop) Object.assign(body, { crop: current.crop, cropAspect: current.cropAspect })
-      if (pick.canvas) Object.assign(body, { canvas: current.canvas, background: current.background })
+      if (pick.canvas) Object.assign(body, { canvas: current.canvas, background: current.background, bgImage: current.bgImage })
       if (pick.caption && has.caption) body.caption = current.caption
       if (pick.fades && has.fades) Object.assign(body, { fadeIn: current.fadeIn || 0, fadeOut: current.fadeOut || 0 })
       body.autoCaptions = Boolean(pick.autoCaptions)
@@ -768,15 +784,39 @@ export function LooksSheet ({ current, onApply, onClose }) {
   return (
     <div className="sheetwrap" onClick={() => !busy && onClose()}>
       <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
-        <h2 className="sheet__title">Looks</h2>
+        <h2 className="sheet__title">Templates</h2>
         <p className="sheet__body">
-          A look is a saved crop, shape, caption style and fades. Put one on a clip and it all
-          happens at once; it can also make the captions for you. Undo takes it off again.
+          A template is a saved crop, shape and fill, caption style and fades. Put one on a clip
+          and it all happens at once; it can also make the captions for you. Undo takes it off again.
         </p>
 
+        <div className="tplsave">
+          <label className="tplsave__label" htmlFor="tpl-name">Save this clip as a template</label>
+          <div className="tplsave__row">
+            <input
+              id="tpl-name"
+              ref={nameRef}
+              className="tplsave__name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Give it a name, like TikTok vertical"
+              disabled={busy}
+              autoFocus
+              onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) save() }}
+            />
+            <button className="pill pill--solid" onClick={save} disabled={busy || !name.trim()}>Save template</button>
+          </div>
+          {box('crop', 'The crop', has.crop ? 'Adapts to clips of a different shape: same output shape, same centre.' : 'This clip is not cropped.', has.crop)}
+          {box('canvas', 'The shape and fill', has.canvas ? `${current.canvas} with ${current.background === 'black' ? 'a black' : current.background === 'image' ? 'a picture' : 'a blurred'} fill` : 'Keep each clip in its own shape.')}
+          {box('caption', 'The caption style', has.caption ? 'Font, style, colour, size, place and animation of the captions.' : 'Make captions and style one first to include this.', has.caption)}
+          {box('fades', 'The fades', has.fades ? `In ${current.fadeIn || 0} s, out ${current.fadeOut || 0} s` : 'No fades set on this clip.', has.fades)}
+          {box('autoCaptions', 'Make captions automatically', 'When the template is used, captions are made straight away, in the saved style.')}
+        </div>
+
+        <h3 className="sheet__sub">Your templates</h3>
         <div className="looklist">
           {looks === null ? <p className="sheet__body">Loading…</p> : null}
-          {looks && !looks.length ? <p className="sheet__body">No saved looks yet. Set up a clip the way you like it, then save its look below.</p> : null}
+          {looks && !looks.length ? <p className="sheet__body">None saved yet. Set up a clip the way you like it, then name it above.</p> : null}
           {(looks || []).map((L) => (
             <div key={L.id} className="lookitem">
               <div className="lookitem__text">
@@ -787,25 +827,6 @@ export function LooksSheet ({ current, onApply, onClose }) {
               <button className="ed__go" onClick={() => onApply(L)} disabled={busy}>Use</button>
             </div>
           ))}
-        </div>
-
-        <h3 className="sheet__sub">Save this clip's look</h3>
-        {box('crop', 'The crop', has.crop ? 'Adapts to clips of a different shape: same output shape, same centre.' : 'This clip is not cropped.', has.crop)}
-        {box('canvas', 'The shape and fill', has.canvas ? `${current.canvas} with a ${current.background === 'black' ? 'black' : 'blurred'} fill` : 'Keep each clip in its own shape.')}
-        {box('caption', 'The caption style', has.caption ? 'Font, style, colour, size, place and animation of the captions.' : 'Make captions and style one first to include this.', has.caption)}
-        {box('fades', 'The fades', has.fades ? `In ${current.fadeIn || 0} s, out ${current.fadeOut || 0} s` : 'No fades set on this clip.', has.fades)}
-        {box('autoCaptions', 'Make captions automatically', 'When the look is used, captions are made straight away, in the saved style.')}
-        <div className="ed__textrow sheet__row">
-          <input
-            ref={nameRef}
-            className="ed__field ed__field--wide ed__grow"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name it, like TikTok vertical"
-            disabled={busy}
-            onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) save() }}
-          />
-          <button className="ed__go" onClick={save} disabled={busy || !name.trim()}>Save look</button>
         </div>
 
         {error ? <p className="sheet__error">{error}</p> : null}

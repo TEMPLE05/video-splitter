@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import Thumb from './Thumb.jsx'
+import { ConfirmDeleteProject, NewProjectCard, NewProjectSheet, ProjectCard } from './Projects.jsx'
 import { Back, Check, Close, Folder, More, Music, Scissors, Trash } from './icons.jsx'
 import {
-  getState, listBucket, moveClips, pullBucketAudio, thumbUrl, tidyInfo, tidyRun, tidyUndo, trashClips, videoUrl
+  getProject, getState, listBucket, listProjects, moveClips, pullBucketAudio, thumbUrl, tidyInfo, tidyRun, tidyUndo, trashClips, videoUrl
 } from './api.js'
 
 function formatSize (bytes) {
@@ -45,7 +46,7 @@ function Card ({ video, onOpen, selected, selecting, onSelect }) {
   useEffect(() => () => clearTimeout(timer.current), [])
 
   return (
-    <div className={'cardbox' + (selected ? ' is-selected' : '') + (selecting ? ' is-selecting' : '')}>
+    <div className={'cardbox cardbox--clip' + (selected ? ' is-selected' : '') + (selecting ? ' is-selecting' : '')}>
       <button
         className="card"
         onClick={(e) => {
@@ -370,7 +371,7 @@ function TidySheet ({ info, onDone, onCancel }) {
  * so coming back from the editor lands you where you left instead of on the
  * first folder in the list.
  */
-export default function Library ({ state, onState, onOpen, onBack, place, onPlace }) {
+export default function Library ({ state, onState, onOpen, onOpenProject, onBack, place, onPlace }) {
   const exists = (id) => state.buckets.some((b) => b.id === id)
   const [openId, setOpenId] = useState(place?.bucketId && exists(place.bucketId) ? place.bucketId : null)
 
@@ -382,6 +383,8 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
   const [sheet, setSheet] = useState(null)
   const [notice, setNotice] = useState(null)
   const [tidy, setTidy] = useState(null)
+  const [projects, setProjects] = useState([])
+  const [dropProject, setDropProject] = useState(null)
   const [selectMode, setSelectMode] = useState(false)
   const [menu, setMenu] = useState(false)
   const lastPick = useRef(null)
@@ -438,6 +441,24 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
     lastPick.current = i
   }
 
+  async function openProject (p) {
+    onPlace({ bucketId: null, scroll: 0 })
+    try {
+      const rec = await getProject(p.id)
+      onOpenProject(rec, state.buckets.find((b) => b.id === rec.bucketId) || { id: rec.bucketId, name: rec.bucketName })
+    } catch (err) {
+      setNotice(err.message)
+    }
+  }
+
+  // Projects live on the front page, above the folders.
+  useEffect(() => {
+    if (openId) return
+    let cancelled = false
+    listProjects().then((d) => { if (!cancelled) setProjects(d.projects) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [openId])
+
   async function refresh () {
     const [d, s] = await Promise.all([listBucket(openId).catch(() => null), getState().catch(() => null)])
     if (d) setData(d)
@@ -476,7 +497,7 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
 
   useEffect(() => {
     function onKey (event) {
-      if (removing || sheet) return
+      if (removing || sheet || dropProject) return
       if (menu && event.key === 'Escape') { setMenu(false); return }
       const tag = event.target.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
@@ -679,6 +700,12 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
         </div>
       ) : (
         <div className="grid grid--folders">
+          <h2 className="gridhead">Projects</h2>
+          <NewProjectCard onClick={() => setSheet('newproject')} />
+          {projects.map((p) => (
+            <ProjectCard key={p.id} project={p} onOpen={() => openProject(p)} onDelete={() => setDropProject(p)} />
+          ))}
+          <h2 className="gridhead">Folders</h2>
           {state.buckets.map((b) => (
             <FolderTile
               key={b.id}
@@ -690,6 +717,21 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
         </div>
       )}
 
+      {dropProject ? (
+        <ConfirmDeleteProject
+          project={dropProject}
+          onCancel={() => setDropProject(null)}
+          onDone={() => { setProjects((ps) => ps.filter((x) => x.id !== dropProject.id)); setDropProject(null); setNotice('Deleted the project') }}
+        />
+      ) : null}
+      {sheet === 'newproject' ? (
+        <NewProjectSheet
+          buckets={state.buckets}
+          bucketId={null}
+          onCancel={() => setSheet(null)}
+          onCreated={(rec, b) => { setSheet(null); onPlace({ bucketId: b.id, scroll: 0 }); onOpenProject(rec, b) }}
+        />
+      ) : null}
       {sheet === 'tidy' && tidy ? (
         <TidySheet
           info={tidy}

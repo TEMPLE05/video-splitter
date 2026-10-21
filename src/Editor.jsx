@@ -19,7 +19,24 @@ import {
   Aspect, Back, Captions, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
   Film, Sparkle, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
-import { getStrip, getWave, loadEdit, probeVideo, saveEdit, videoUrl } from './api.js'
+import { getStrip, getWave, loadEdit, probeVideo, saveEdit, saveProject, videoUrl } from './api.js'
+import { lanesOf } from './editor/Timeline.jsx'
+
+/** The first lane with room for something from a to b, as CapCut picks one. */
+function freeLane (items, startOf, endOf, a, b, from = 0, except = null) {
+  const rows = lanesOf(items, startOf, endOf).rows
+  for (let lane = from; ; lane++) {
+    const clash = items.some((x) => x.id !== except && rows.get(x.id) === lane && startOf(x) < b - 1e-6 && endOf(x) > a + 1e-6)
+    if (!clash) return lane
+  }
+}
+const textLane = (texts, a, b, from, except) => freeLane(texts, (t) => t.start, (t) => t.end, a, b, from, except)
+const soundLane = (sounds, a, b, from, except) => freeLane(sounds, (x) => x.at, (x) => x.at + x.len, a, b, from, except)
+/** Every item given its lane for good, so lanes stay put as things move. */
+const withLanes = (items, startOf, endOf) => {
+  const rows = lanesOf(items, startOf, endOf).rows
+  return items.map((x) => (Number.isInteger(x.lane) ? x : { ...x, lane: rows.get(x.id) }))
+}
 
 const MIN_PIECE = 0.1
 const MAX_PPS = 400
@@ -107,7 +124,10 @@ function centredCrop (ratio, W, H) {
  * optional song laid under them, and the look of the frame: a crop, a canvas
  * shape and what fills around the video. All of it is undoable.
  */
-export default function Editor ({ video, bucket, onBack }) {
+export default function Editor ({ video: clip, project, bucket, onBack }) {
+  // A project has no clip of its own. Inside the editor it is treated as a
+  // clip with nothing in it: every piece names its own picture or clip.
+  const video = project ? { id: 'project:' + project.id, name: project.name, project } : clip
   const [info, setInfo] = useState(null)
   const [loadError, setLoadError] = useState(null)
 
@@ -205,6 +225,34 @@ export default function Editor ({ video, bucket, onBack }) {
 
   useEffect(() => {
     let cancelled = false
+    if (project) {
+      const d = { width: project.width, height: project.height, fps: 30, duration: 0, hasVideo: true, hasAudio: false, project: true }
+      setInfo(d)
+      ;(async () => {
+        let present = project.edit ? restoreEdit({ edit: project.edit }, 0) : null
+        if (!present) {
+          // A new project: the pictures and clips chosen for it, in order.
+          const start = []
+          for (const m of project.initial || []) {
+            if (m.kind === 'image') start.push(imagePiece(m, m.seconds || 3))
+            else {
+              const pi = await probeVideo(m.id).catch(() => null)
+              if (pi && pi.duration > 0) {
+                setClips((x) => ({ ...x, [m.id]: pi }))
+                start.push({ id: newId(), src: m.id, start: 0, end: pi.duration })
+              }
+            }
+          }
+          if (!start.length) throw new Error('Nothing to start the project with. Add a picture or a clip.')
+          present = { ...freshEdit(0), pieces: start }
+        } else if (project.extra?.soundOff) setSoundOff(true)
+        if (cancelled) return
+        setHist({ past: [], present, future: [] })
+        if (project.edit) { setSavedAt(project.savedAt); flash('Picked up where you left off.') }
+      })().catch((err) => { if (!cancelled) setLoadError(err.message) })
+      loadFonts().then(() => { if (!cancelled) setFontsReady((n) => n + 1) })
+      return () => { cancelled = true; clearTimeout(noteTimer.current) }
+    }
     probeVideo(video.id)
       .then((d) => {
         if (cancelled) return
@@ -263,13 +311,14 @@ export default function Editor ({ video, bucket, onBack }) {
   const pendingSave = useRef(null)
   useEffect(() => {
     if (!hist || !info) return
-    const pristine = isPristine(hist.present, info.duration)
+    const pristine = !project && isPristine(hist.present, info.duration)
     if (pristine && !savedAt) return
     const job = { edit: hist.present, extra: { soundOff, outMode } }
     pendingSave.current = job
     const timer = setTimeout(() => {
       pendingSave.current = null
-      saveEdit(video.id, job.edit, job.extra).then((r) => setSavedAt(r.savedAt)).catch(() => {})
+      const save = project ? saveProject(project.id, job.edit, job.extra) : saveEdit(video.id, job.edit, job.extra)
+      save.then((r) => setSavedAt(r.savedAt)).catch(() => {})
     }, 600)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -279,7 +328,7 @@ export default function Editor ({ video, bucket, onBack }) {
     const job = pendingSave.current
     if (job) {
       // keepalive lets the save finish even as the editor closes.
-      fetch('/api/edit/' + encodeURIComponent(video.id), {
+      fetch(project ? '/api/projects/' + encodeURIComponent(project.id) : '/api/edit/' + encodeURIComponent(video.id), {
         method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job)
       }).catch(() => {})
     }
@@ -333,7 +382,8 @@ export default function Editor ({ video, bucket, onBack }) {
   // Fully zoomed out, the whole clip fits in the right half, starting at the
   // playhead, as it does when CapCut opens one. Measured against the clip, not
   // the edit, so trimming never rescales the timeline under the pointer.
-  const fitPps = width && duration ? Math.min(MAX_PPS, (width * 0.45) / duration) : 1
+  const span = duration || Math.max(total, 5)
+  const fitPps = width && span ? Math.min(MAX_PPS, (width * 0.45) / span) : 1
   const pps = Math.min(Math.max(zoom ?? fitPps, fitPps), MAX_PPS)
   const zoomBy = (f) => setZoom(Math.min(Math.max(pps * f, fitPps), MAX_PPS))
 
@@ -482,11 +532,15 @@ export default function Editor ({ video, bucket, onBack }) {
     try {
       length = (await probeVideo(media.id)).duration || 0
     } catch { /* plays anyway; it just runs to the end of the edit */ }
-    let at = pb.now()
-    if (at > total - 0.5) at = 0
+    const after = afterSound.current ? (edit.sounds || []).find((x) => x.id === afterSound.current) : null
+    afterSound.current = null
+    let at = after ? after.at + after.len : pb.now()
+    if (at > total - 0.5) at = after ? Math.max(0, total - 0.5) : 0
     const len = Math.max(0.2, Math.min(length || total, total - at))
-    const snd = { id: newId(), media: media.id, name: media.name, duration: length, at, from: 0, len, volume: 1 }
-    commitEdit({ sounds: [...(edit.sounds || []), snd] })
+    const fixed = withLanes(edit.sounds || [], (x) => x.at, (x) => x.at + x.len)
+    const lane = soundLane(fixed, at, at + len, after ? (after.lane ?? 0) : 0)
+    const snd = { id: newId(), media: media.id, name: media.name, duration: length, at, from: 0, len, volume: 1, lane }
+    commitEdit({ sounds: [...fixed, snd] })
     selectSound(snd.id)
     const whole = at < 0.5 && len >= total * 0.9
     if (whole && !(edit.sounds || []).length && info?.hasAudio && !soundOff) {
@@ -506,14 +560,57 @@ export default function Editor ({ video, bucket, onBack }) {
     commitEdit({ sounds: (edit.sounds || []).map((x) => (x.id === id ? { ...x, ...patch } : x)) }, key)
   }
 
+  // Set when "Sound after this one" opens the picker.
+  const afterSound = useRef(null)
+
+  /** A new line under this text, appearing a moment after it, in the same style. */
+  function textBelow (item) {
+    const ctx = document.createElement('canvas').getContext('2d')
+    const { W, H } = frameSize(info, look)
+    const box = layoutText(ctx, item, W, H).box
+    const start = Math.min(item.start + 1, Math.max(item.start, item.end - 0.5))
+    const end = Math.min(total, Math.max(item.end, start + 1.5))
+    const next = { ...item, id: newId(), text: 'Next line', start, end, words: undefined, caption: undefined }
+    const tall = (box.y1 - box.y0) / H
+    next.y = Math.min(0.94, item.y + tall + 0.01)
+    const fixed = withLanes(edit.texts || [], (t) => t.start, (t) => t.end)
+    next.lane = textLane(fixed, start, end, 0)
+    commitEdit({ texts: [...fixed, next] })
+    setFreshTextId(next.id)
+    selectText(next.id)
+    flash('Added a line under it, appearing a second later. Change its words, and its times on the Animation tab.')
+  }
+
+  /** A copy of this text, in the same place and style, right after it. */
+  function duplicateText (item) {
+    const len = item.end - item.start
+    let start = item.end
+    if (start > total - 0.2) start = item.start
+    const end = Math.min(total, start + len)
+    const fixed = withLanes(edit.texts || [], (t) => t.start, (t) => t.end)
+    const copy = { ...item, id: newId(), start, end, words: item.words ? rescaleWords(item.words, item, { start, end }) : undefined, lane: undefined }
+    copy.lane = textLane(fixed, start, end, item.lane ?? 0)
+    commitEdit({ texts: [...fixed, copy] })
+    selectText(copy.id)
+    pb.seek(start)
+    flash('Copied it to play right after. Change the words to make it the next one.')
+  }
+
   // Sound bars: moved or trimmed on the timeline.
   const soundBase = useRef(null)
-  function onSound ({ id, at, from, len, phase }) {
+  function onSound ({ id, at, from, len, lane, phase }) {
     if (phase === 'start') { pb.pause(); soundBase.current = edit.sounds || []; return }
     if (phase === 'click') { selectSound(id === selectedSoundId ? null : id); soundBase.current = null; return }
     const base = soundBase.current
     if (!base) return
-    const next = base.map((x) => (x.id === id ? { ...x, at: Math.min(at, Math.max(0, total - 0.2)), from, len: Math.min(len, Math.max(0.2, total - Math.min(at, total - 0.2))) } : x))
+    const fixedBase = withLanes(base, (x) => x.at, (x) => x.at + x.len)
+    const next = fixedBase.map((x) => {
+      if (x.id !== id) return x
+      const a = Math.min(at, Math.max(0, total - 0.2))
+      const moved = { ...x, at: a, from, len: Math.min(len, Math.max(0.2, total - a)) }
+      if (lane !== undefined && lane !== x.lane && soundLane(fixedBase, moved.at, moved.at + moved.len, lane, id) === lane) moved.lane = lane
+      return moved
+    })
     if (phase === 'move') { setSoundDraft(next); return }
     soundBase.current = null
     setSoundDraft(null)
@@ -558,7 +655,9 @@ export default function Editor ({ video, bucket, onBack }) {
       const top = Math.min(...showing.map((x) => layoutText(ctx, x, W, H).box.y0)) / H
       item.y = below + tall / 2 < 0.96 ? below : Math.max(0.05, top - 0.02 - tall / 2)
     }
-    commitEdit({ texts: [...texts, item] })
+    const fixed = withLanes(texts, (t) => t.start, (t) => t.end)
+    item.lane = textLane(fixed, item.start, item.end)
+    commitEdit({ texts: [...fixed, item] })
     setFreshTextId(item.id)
     if (T < start || T >= start + len) pb.seek(start)
     selectText(item.id)
@@ -588,7 +687,7 @@ export default function Editor ({ video, bucket, onBack }) {
 
   // Timeline bars: slide or stretch when it shows.
   const textBase = useRef(null)
-  function onText ({ id, start, end, phase }) {
+  function onText ({ id, start, end, lane, phase }) {
     if (phase === 'start') { pb.pause(); textBase.current = edit.texts; return }
     if (phase === 'click') { selectText(id === selectedTextId ? null : id); textBase.current = null; return }
     const base = textBase.current
@@ -600,7 +699,16 @@ export default function Editor ({ video, bucket, onBack }) {
       if (b - a < 0.2) { a = Math.max(0, b - 0.2); b = a + 0.2 }
       return { ...x, start: a, end: b, words: rescaleWords(x.words, x, { start: a, end: b }) }
     }
-    const next = base.map((x) => (x.id === id ? fit(x) : x))
+    const fixedBase = withLanes(base, (t) => t.start, (t) => t.end)
+    const next = fixedBase.map((x) => {
+      if (x.id !== id) return x
+      const moved = fit(x)
+      if (lane !== undefined && lane !== x.lane) {
+        const room = textLane(fixedBase, moved.start, moved.end, lane, id) === lane
+        if (room) moved.lane = lane
+      }
+      return moved
+    })
     if (phase === 'move') { setTextDraft(next); return }
     textBase.current = null
     setTextDraft(null)
@@ -690,7 +798,11 @@ export default function Editor ({ video, bucket, onBack }) {
     pb.pause()
     const next = { ...look }
     if (L.crop) next.crop = adaptCrop(L.crop, L.cropAspect, info.width / info.height)
-    if (L.canvas !== undefined) { next.canvas = L.canvas; next.background = L.background || 'blur' }
+    if (L.canvas !== undefined) {
+      next.canvas = L.canvas
+      next.background = L.background || 'blur'
+      if (L.background === 'image') next.bgImage = L.bgImage
+    }
     if (L.fadeIn !== undefined || L.fadeOut !== undefined) { next.fadeIn = L.fadeIn || 0; next.fadeOut = L.fadeOut || 0 }
     const patch = { look: next }
     if (L.caption) {
@@ -700,7 +812,7 @@ export default function Editor ({ video, bucket, onBack }) {
       patch.texts = (edit.texts || []).map((x) => (x.caption ? { ...x, ...style, anim: undefined } : x))
     }
     commitEdit(patch)
-    flash(`Used the look “${L.name}”. Undo takes it off.`)
+    flash(`Used the template “${L.name}”. Undo takes it off.`)
     setSheet(L.autoCaptions && info.hasAudio ? 'captions-auto' : null)
   }
 
@@ -749,6 +861,9 @@ export default function Editor ({ video, bucket, onBack }) {
         case 'Minus':
         case 'NumpadSubtract': zoomBy(1 / 1.5); break
         case 'KeyM': setPreviewMuted((m) => !m); break
+        case 'KeyD':
+          if (selectedText) { e.preventDefault(); duplicateText(selectedText) }
+          break
         case 'Escape':
           if (panel === 'text') selectText(null)
           else if (panel) setPanel(null)
@@ -782,6 +897,10 @@ export default function Editor ({ video, bucket, onBack }) {
   const captioned = texts.some((x) => x.caption)
   const staleCaptions = captioned && edit?.captionsFor && !draft && cutsOf(pieces) !== edit.captionsFor
 
+  // What has sound: the clips in the edit, and anything added over them.
+  const clipsHaveSound = Boolean(info && (info.hasAudio || pieces.some((p) => p.src && clips[p.src]?.hasAudio)))
+  const anySound = clipsHaveSound || sounds.length > 0
+
   const outputs = outMode === 'join' ? 1 : pieces.length
   const outLabel = outMode === 'join' ? '1 video' : `${outputs} file${outputs === 1 ? '' : 's'}`
   const togglePanel = (name) => setPanel((p) => (p === name ? null : name))
@@ -805,8 +924,8 @@ export default function Editor ({ video, bucket, onBack }) {
         </div>
         <div className="libbar__right">
           {savedAt ? <span className="ed__saved" title={'Saved ' + new Date(savedAt).toLocaleString()}>Saved</span> : null}
-          {hist && info && !isPristine(hist.present, info.duration) ? (
-            <button className="ed__ghost" onClick={startOver} title="Back to the whole clip, untouched">Start over</button>
+          {hist && info && !project && !isPristine(hist.present, info.duration) ? (
+            <button className="ed__startover" onClick={startOver} title="Back to the whole clip, untouched (Undo brings your edit back)">Start over</button>
           ) : null}
           <button className="ctl" onClick={undo} disabled={!hist?.past.length} title="Undo (Ctrl+Z)" aria-label="Undo">
             <Undo size={18} />
@@ -930,8 +1049,16 @@ export default function Editor ({ video, bucket, onBack }) {
           ))}
           <span className="ed__panel-sep" />
           <span className="ed__panel-label">Fill</span>
-          <Choice on={look.background !== 'black'} onClick={() => setLook({ background: 'blur' })}>Blur</Choice>
+          <Choice on={look.background !== 'black' && look.background !== 'image'} onClick={() => setLook({ background: 'blur' })}>Blur</Choice>
           <Choice on={look.background === 'black'} onClick={() => setLook({ background: 'black' })}>Black</Choice>
+          <Choice
+            on={look.background === 'image'}
+            onClick={() => (look.bgImage && look.background !== 'image' ? setLook({ background: 'image' }) : (pb.pause(), setSheet('fill-pick')))}
+            title="A picture of your own behind the video"
+          >
+            {look.background === 'image' ? 'Picture ✓' : 'Picture…'}
+          </Choice>
+          {look.background === 'image' ? <button className="textbtn" onClick={() => setSheet('fill-pick')}>Change picture</button> : null}
           <button className="ed__go" onClick={() => setPanel(null)}>Done</button>
         </div>
       ) : null}
@@ -945,6 +1072,8 @@ export default function Editor ({ video, bucket, onBack }) {
           captions={texts.filter((x) => x.caption).length}
           onChange={(patch, key) => updateText(selectedText.id, patch, key)}
           total={total}
+          onBelow={() => textBelow(selectedText)}
+          onDuplicate={() => duplicateText(selectedText)}
           onStyleAll={() => styleAllCaptions(selectedText)}
           onDelete={() => deleteText(selectedText.id)}
           onClose={() => selectText(null)}
@@ -972,7 +1101,8 @@ export default function Editor ({ video, bucket, onBack }) {
           canClipSound={Boolean(info?.hasAudio)}
           onClipSound={(on) => setSoundOff(!on)}
           onChange={(patch, key) => updateSound(selectedSound.id, patch, key)}
-          onAnother={() => setSheet('audio-pick')}
+          onAnother={() => { afterSound.current = null; setSheet('audio-pick') }}
+          onAfter={() => { afterSound.current = selectedSound.id; setSheet('audio-pick') }}
           onRemove={() => { commitEdit({ sounds: (edit.sounds || []).filter((x) => x.id !== selectedSound.id) }); selectSound(null); flash('Removed that sound') }}
           onClose={() => selectSound(null)}
         />
@@ -992,9 +1122,9 @@ export default function Editor ({ video, bucket, onBack }) {
         <Tool icon={<Scissors />} label="Split" hint="S" onClick={split} disabled={!hist} />
         <Tool icon={<Trash />} label="Delete" hint="Del" onClick={deleteSelected} disabled={!selected || pieces.length < 2} />
         <Tool icon={<Timer />} label="Split at…" onClick={() => togglePanel('at')} on={panel === 'at'} disabled={!hist} />
-        <Tool icon={<Grid />} label="Into parts" onClick={() => togglePanel('parts')} on={panel === 'parts'} disabled={!hist} />
+        <Tool icon={<Grid />} label="Into parts" onClick={() => togglePanel('parts')} on={panel === 'parts'} disabled={!hist || Boolean(project)} title={project ? 'Cuts one clip into equal parts; not for projects' : 'Into parts'} />
         <span className="ed__tools-sep" />
-        <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist} />
+        <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist || Boolean(project)} title={project ? 'Crop is for a clip of your own; a project uses Canvas for its shape' : 'Crop'} />
         <Tool icon={<Aspect />} label="Canvas" onClick={() => togglePanel('canvas')} on={panel === 'canvas' || look.canvas !== 'original'} disabled={!hist} />
         <Tool
           icon={<Transition />}
@@ -1005,15 +1135,15 @@ export default function Editor ({ video, bucket, onBack }) {
         />
         <Tool icon={<Film />} label="Add clip" onClick={() => { pb.pause(); setSheet('clip-pick') }} disabled={!hist} />
         <span className="ed__tools-sep" />
-        <Tool icon={<Sparkle />} label="Looks" onClick={() => { pb.pause(); setSheet('looks') }} disabled={!hist} />
+        <Tool icon={<Sparkle />} label="Templates" onClick={() => { pb.pause(); setSheet('looks') }} disabled={!hist} />
         <Tool icon={<TextIcon />} label="Text" onClick={addText} disabled={!hist} />
         <Tool
           icon={<Captions />}
           label="Captions"
           onClick={() => { pb.pause(); setSheet('captions') }}
           on={texts.some((x) => x.caption)}
-          disabled={!info || !info.hasAudio}
-          title={info && !info.hasAudio ? 'This clip has no sound to caption' : 'Auto captions from the speech'}
+          disabled={!info || !(info.hasAudio || anySound)}
+          title={info && !(info.hasAudio || anySound) ? 'Nothing in this edit has sound to caption yet' : 'Auto captions from the speech, voice-overs included'}
         />
         <Tool icon={<Photo />} label="Add picture" onClick={() => { pb.pause(); setSheet('image-pick') }} disabled={!hist} />
         <span className="ed__tools-sep" />
@@ -1029,10 +1159,10 @@ export default function Editor ({ video, bucket, onBack }) {
           label={soundOff ? 'Clip sound off' : 'Clip sound'}
           onClick={() => setSoundOff((s) => !s)}
           on={soundOff}
-          disabled={!info || !info.hasAudio}
-          title={info && !info.hasAudio ? 'This clip has no sound' : 'Turn the clip\'s own sound off, for the preview and the export'}
+          disabled={!info || !clipsHaveSound}
+          title={info && !clipsHaveSound ? 'The clips here have no sound' : 'Turn the clips\' own sound off, for the preview and the export'}
         />
-        <Tool icon={<Download />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} />
+        {!project ? <Tool icon={<Download />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} /> : null}
       </nav>
       </div>
 
@@ -1042,7 +1172,7 @@ export default function Editor ({ video, bucket, onBack }) {
           bucket={bucket}
           pieces={pieces}
           total={total}
-          hasAudio={info.hasAudio}
+          hasAudio={clipsHaveSound}
           soundOff={soundOff}
           onSoundOff={setSoundOff}
           sounds={edit.sounds || []}
@@ -1060,6 +1190,8 @@ export default function Editor ({ video, bucket, onBack }) {
           auto={sheet === 'captions-auto'}
           video={video}
           pieces={pieces}
+          sounds={sounds}
+          clipSound={!soundOff && clipsHaveSound}
           existing={texts.filter((x) => x.caption).length}
           onWords={setCaptions}
           onClose={() => setSheet(null)}
@@ -1068,6 +1200,15 @@ export default function Editor ({ video, bucket, onBack }) {
       {sheet === 'clip-pick' ? <ClipSheet bucket={bucket} mainId={video.id} onPick={addClip} onClose={() => setSheet(null)} /> : null}
       {sheet === 'audio' ? <AudioSheet video={video} bucket={bucket} onClose={() => setSheet(null)} /> : null}
       {sheet === 'audio-pick' ? <MediaSheet kind="audio" bucket={bucket} onPick={addSong} onClose={() => setSheet(null)} /> : null}
+      {sheet === 'fill-pick' ? (
+        <MediaSheet
+          kind="image"
+          bucket={bucket}
+          forFill
+          onPick={(m) => { setSheet(null); setLook({ background: 'image', bgImage: m.id }); flash(`${m.name} now fills the space around the video`) }}
+          onClose={() => setSheet(null)}
+        />
+      ) : null}
       {sheet === 'image-pick' ? <MediaSheet kind="image" bucket={bucket} onPick={addPicture} onClose={() => setSheet(null)} /> : null}
     </div>
   )

@@ -155,9 +155,15 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
   }))
 
   /** Renders the edit's own sound to a 16 kHz mono wav, pieces in order. */
-  async function editAudio (file, pieces, out) {
+  /**
+   * The sound of the edit at 16 kHz mono: the pieces' own sound in order
+   * (unless left out), with any added sounds, voice-overs above all, mixed in
+   * at their times.
+   */
+  async function editAudio (file, pieces, out, sounds = [], clipSound = true) {
     const args = ['-hide_banner', '-loglevel', 'error', '-y']
     const graph = []
+    const total = pieces.reduce((t, p) => t + (p.kind === 'image' ? p.length : p.end - p.start), 0)
     pieces.forEach((p, i) => {
       if (p.kind === 'image') {
         graph.push(`[${i}:a]atrim=duration=${p.length},asetpts=PTS-STARTPTS[a${i}]`)
@@ -165,13 +171,24 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
         return
       }
       args.push('-ss', String(p.start), '-t', String(p.end - p.start), '-i', p.file || file)
-      if (p.silent) {
+      if (p.silent || !clipSound) {
         graph.push(`anullsrc=r=16000:cl=mono,atrim=duration=${p.end - p.start}[a${i}]`)
         return
       }
       graph.push(`[${i}:a:0]aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,apad,atrim=duration=${p.end - p.start},asetpts=PTS-STARTPTS[a${i}]`)
     })
-    graph.push(`${pieces.map((_, i) => `[a${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[out]`)
+    graph.push(`${pieces.map((_, i) => `[a${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[clip]`)
+    const mixed = ['[clip]']
+    sounds.forEach((snd, j) => {
+      const k = pieces.length + j
+      const from = Math.min(snd.at, total)
+      const len = Math.min(snd.len, total - from)
+      if (len < 0.05) return
+      args.push('-ss', String(snd.from), '-t', String(len), '-i', snd.file)
+      graph.push(`[${k}:a:0]aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,volume=${snd.volume},adelay=${Math.round(from * 1000)}:all=1,apad,atrim=duration=${total}[s${j}]`)
+      mixed.push(`[s${j}]`)
+    })
+    graph.push(mixed.length > 1 ? `${mixed.join('')}amix=inputs=${mixed.length}:duration=first:normalize=0[out]` : '[clip]anull[out]')
     args.push('-filter_complex', graph.join(';'), '-map', '[out]', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', out)
     const code = await new Promise((resolve) => {
       const p = spawn('ffmpeg', args, { windowsHide: true })
@@ -201,11 +218,11 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     return { words, language: json.result?.language || null }
   }
 
-  async function transcribe (job, file, pieces, key, cacheFile, { names, translate }) {
+  async function transcribe (job, file, pieces, key, cacheFile, { names, translate, sounds, clipSound }) {
     const base = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}`)
     const wav = base + '.wav'
     try {
-      await editAudio(file, pieces, wav)
+      await editAudio(file, pieces, wav, sounds, clipSound)
       job.progress = 0.02
       const cli = findCli() || 'whisper-cli'
       const threads = String(Math.max(1, Math.min(8, os.cpus().length)))
@@ -264,14 +281,16 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     const translate = Boolean(body.translate)
     if (!(await cliReady()) || !modelReady(model)) throw httpError(409, 'Captions need a one-time download first')
 
-    const file = resolveInSource(decodeId(String(body.id)))
-    let st
-    try { st = await fsp.stat(file) } catch { throw httpError(404, 'That video is no longer there') }
-    const meta = await probe(file)
-    if (!meta.hasAudio) throw httpError(400, 'This clip has no sound to caption')
-
+    // A project has no clip of its own; every piece names its clip.
+    const isProject = Boolean(body.project)
+    const file = isProject ? null : resolveInSource(decodeId(String(body.id)))
+    let st = { size: 0, mtimeMs: 0 }
+    if (!isProject) {
+      try { st = await fsp.stat(file) } catch { throw httpError(404, 'That video is no longer there') }
+    }
+    const clipSound = body.clipSound !== false
     const pieces = []
-    const metas = new Map([[file, meta]])
+    const metas = new Map(isProject ? [] : [[file, await probe(file)]])
     for (const p of Array.isArray(body.segments) ? body.segments : []) {
       if (p && p.kind === 'image') {
         const length = Number(p.length)
@@ -280,6 +299,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       }
       // A piece from another clip is heard from that clip.
       const pfile = p && p.src ? resolveInSource(decodeId(String(p.src))) : file
+      if (!pfile) throw httpError(400, 'A piece of the project does not say which clip it is from')
       if (!metas.has(pfile)) {
         try { metas.set(pfile, await probe(pfile)) } catch { throw httpError(404, 'A clip in the edit is no longer there') }
       }
@@ -290,8 +310,19 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     }
     if (!pieces.length) throw httpError(400, 'Nothing to caption')
 
+    // Added sounds, such as a voice-over, are heard too.
+    const sounds = []
+    for (const x of Array.isArray(body.sounds) ? body.sounds.slice(0, 50) : []) {
+      const sfile = resolveInSource(decodeId(String(x && x.id)))
+      if (!fs.existsSync(sfile)) throw httpError(404, 'An added sound file is no longer there')
+      const len = Number(x.len)
+      if (len > 0) sounds.push({ file: sfile, at: Math.max(0, Number(x.at) || 0), from: Math.max(0, Number(x.from) || 0), len, volume: Math.min(Math.max(Number(x.volume ?? 1), 0), 2) })
+    }
+    const heard = sounds.length || (clipSound && pieces.some((p) => p.kind === 'video' && !p.silent))
+    if (!heard) throw httpError(400, 'There is no sound in this edit to caption. Add a voice-over or turn the clip sound on.')
+
     const key = crypto.createHash('sha1')
-      .update(['captions-v2', file, st.size, st.mtimeMs, model, names, translate, JSON.stringify(pieces)].join('|')).digest('hex')
+      .update(['captions-v3', file, st.size, st.mtimeMs, model, names, translate, clipSound, JSON.stringify(pieces), JSON.stringify(sounds)].join('|')).digest('hex')
     const cacheFile = path.join(CAP_DIR, key.slice(0, 2), key + '.json')
     try {
       const cached = JSON.parse(await fsp.readFile(cacheFile, 'utf8'))
@@ -309,7 +340,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       job = { progress: 0 }
       jobs.set(key, job)
       // One at a time: Whisper already uses every core.
-      queue = queue.then(() => transcribe(job, file, pieces, model, cacheFile, { names, translate }))
+      queue = queue.then(() => transcribe(job, file, pieces, model, cacheFile, { names, translate, sounds, clipSound }))
         .then(() => { jobs.delete(key) })
         .catch((err) => { job.error = err.message || 'Captions failed' })
     }

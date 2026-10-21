@@ -97,7 +97,9 @@ export default function App () {
   if (view.name === 'edit') {
     return (
       <Editor
+        key={view.project ? 'p' + view.project.id : view.video.id}
         video={view.video}
+        project={view.project}
         bucket={view.bucket}
         onBack={() => setView({ name: 'library' })}
       />
@@ -112,6 +114,7 @@ export default function App () {
         place={libraryPlace}
         onPlace={setLibraryPlace}
         onOpen={(video, bucket) => setView({ name: 'edit', video, bucket })}
+        onOpenProject={(project, bucket) => setView({ name: 'edit', project, bucket })}
         onBack={() => setView({ name: 'sort' })}
       />
     )

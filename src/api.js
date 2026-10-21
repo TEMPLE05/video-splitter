@@ -124,3 +124,14 @@ export const uploadFont = (file) =>
   })
 
 export const fontUrl = (file) => '/api/fonts/file/' + encodeURIComponent(file)
+
+// Projects: edits that start from pictures and clips rather than one video.
+export const listProjects = (bucketId) => request(bucketId ? '/api/bucket/' + encodeURIComponent(bucketId) + '/projects' : '/api/projects')
+
+export const createProject = (data) => request('/api/projects', json('POST', data))
+
+export const getProject = (id) => request('/api/projects/' + encodeURIComponent(id))
+
+export const saveProject = (id, edit, extra) => request('/api/projects/' + encodeURIComponent(id), json('PUT', { edit, extra }))
+
+export const deleteProject = (id) => request('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' })

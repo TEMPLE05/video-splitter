@@ -160,7 +160,9 @@ mouse movement or keypress brings it back.
 | `L` | Open the library |
 | `?` | Show the shortcut panel |
 
-Only the first nine buckets have number keys. With more than nine, a **Find**
+With many buckets the bar keeps to the lower part of the screen and scrolls,
+so it never covers the video's top or the folder button. Only the first nine
+buckets have number keys. With more than nine, a **Find**
 bubble appears: press `F`, type a few letters, and the bar narrows to the
 buckets that match. The arrow keys choose between them and `Enter` files.
 
@@ -221,6 +223,22 @@ selected, the top bar shows how many, with buttons to:
   Nothing is deleted outright. Exports and pulled audio stay where they are.
 
 `Delete` on the keyboard does the same, and `Esc` lets go of the selection.
+
+### Projects: a video from pictures
+
+A project is a video that starts from nothing rather than from one clip: say,
+a set of pictures with a voice-over, transitions and captions. **New project**
+is on the library's front page, above the folders. Give it a name
+and a shape (tall 9:16, square, portrait 4:5 or wide 16:9), tick the pictures
+and clips to start with, in the order you want them, or add pictures from your
+computer, and choose how long each picture shows. The editor opens with
+everything else there: sounds and voice-overs, transitions, text, captions and
+templates.
+
+Projects appear in their folder's **Projects** row, and pick up where you left
+off. Exports go to that folder's `edits` folder under the project's name.
+Deleting a project removes only its edit; the pictures, sounds and exports
+stay.
 
 ### Pulling all the audio
 
@@ -316,7 +334,8 @@ switch between one video and separate parts in the export window at any time.
   The 9:16, 1:1, 4:5 and 16:9 buttons lock the box to that shape.
 - **Canvas** sets the shape of the finished video. When the video does not
   fill it, the space around it is filled with a blurred copy of the picture,
-  the way TikTok and Shorts do it, or with black.
+  the way TikTok and Shorts do it, with black, or with a **picture** of your
+  own, cropped to fill the frame.
 - **Add picture** puts a still image after the selected piece, or at the end,
   for as many seconds as you choose. It is a piece like any other: drag its
   handles to change how long it shows, or delete it. Pictures from your
@@ -326,7 +345,13 @@ switch between one video and separate parts in the export window at any time.
 
 **Text** adds a line of text at the playhead, showing for three seconds. A
 second text added while another is showing goes underneath it rather than on
-top. Type into the box; the tabs underneath set the rest:
+top. As in CapCut, every text and every sound sits in its own **lane** on the
+timeline, one under another: drag a bar along to change when it plays, or up
+and down to change lane, and use the **+ Sound** and **+ Text** buttons at the left of the lanes to add one.
+In the text panel, **+ Text below** adds a line under the current one that
+appears a second after it, and **Duplicate** (`D`) copies it, style and all,
+to play right after it. The sound panel has **+ Sound after this**, which
+starts the next sound when the current one ends. Type into the box; the tabs underneath set the rest:
 
 - **Font:** Clean, Heavy, Black, Narrow, Serif, Type, Hand and Script, plus
   any font you import. **Import font…** takes a `.ttf`, `.otf`, `.woff` or
@@ -366,6 +391,8 @@ timeline.
   "Messy", is written the listed way.
 - **Translate into English** turns speech in another language into English
   captions.
+- **Listen to** chooses what is heard: the clips' own sound, the added sounds
+  (a voice-over, say), or both. Leave a song out to caption only the voice.
 - **Word by word** is an animation for captions: the word being spoken lights
   up in a second colour. **Use this look for all captions** copies one
   caption's font, style, colour, size, place and animation to every caption.
@@ -378,15 +405,16 @@ offline. A short clip takes a few seconds; a nine-minute episode about a
 minute. On macOS and Linux, install whisper.cpp so `whisper-cli` is on your
 PATH and the app uses that instead.
 
-### Looks
+### Templates
 
-A look is a saved crop, shape and fill, caption style and fades, under a name
-such as "TikTok vertical". **Looks** saves the current clip's look, with a tick
-for each part to include, and puts a saved look on any clip in one go. A look
-can also make the captions straight away, in its saved style.
+A template is a saved crop, shape and fill, caption style and fades, under a
+name such as "TikTok vertical". In **Templates**, type a name at the top, tick
+the parts to include and save; the list below puts a saved template on any
+clip in one go. A template can also make the captions straight away, in its
+saved style.
 
 A crop saved on a tall clip still works on a wide one: it keeps the same output
-shape and the same centre. Using a look is one undo step.
+shape and the same centre. Using a template is one undo step.
 
 ### Pulling the audio out
 
@@ -514,6 +542,8 @@ server/captions.js    Downloads whisper.cpp on first use and transcribes the edi
 server/edits.js       Saves each clip's edit as you work
 server/library.js     Recycle Bin, moving clips between buckets, tidying up
 server/fonts.js       Fonts imported for text
+server/projects.js    Projects: videos started from pictures, kept in .edits/projects
+src/Projects.jsx      Project cards and the New project window
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
 src/Player.jsx        Video stage and transport for sorting

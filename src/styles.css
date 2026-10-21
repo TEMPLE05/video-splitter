@@ -1378,12 +1378,17 @@ kbd {
 
 .ed__tools {
   display: flex;
-  justify-content: center;
   gap: 4px;
   flex: none;
+  max-width: 100%;
   padding: 10px 16px 14px;
   overflow-x: auto;
 }
+/* Centred while everything fits; when the window is narrow the auto margins
+   shrink to nothing, so the bar scrolls from Split rather than hiding it off
+   the left edge (which plain centring does). */
+.ed__tools > :first-child { margin-left: auto; }
+.ed__tools > :last-child { margin-right: auto; }
 .tool {
   display: flex;
   flex-direction: column;
@@ -1833,3 +1838,137 @@ kbd {
 .ed__animgrid { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 12px; }
 .ed__animlabel { color: var(--dim); font-size: 12px; white-space: nowrap; }
 .ed__panel--text .chip { height: 26px; }
+
+/* Many buckets on a small window: the bar keeps to the lower part of the
+   screen and scrolls inside itself, and the top bar (with the button to pick
+   another folder) always stays above it. */
+.topchrome { z-index: 5; }
+.dock {
+  max-height: min(36vh, 270px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-top: 8px;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+@media (max-height: 640px), (max-width: 900px) {
+  .dock { gap: 6px; max-height: min(32vh, 200px); }
+  .bubble { height: 34px; padding: 0 12px; font-size: 13px; }
+  .bubble__key { width: 20px; height: 20px; font-size: 11px; }
+}
+
+/* Start over: the same glass as the other header buttons, turning red only
+   when the pointer is on it, since it clears the edit. */
+.ed__startover {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.16s, border-color 0.16s, color 0.16s;
+}
+.ed__startover:hover {
+  background: rgba(242, 139, 130, 0.22);
+  border-color: rgba(242, 139, 130, 0.7);
+  color: #ffd2cd;
+  box-shadow: inset 0 1px 0 rgba(255, 220, 216, 0.25), 0 0 18px rgba(242, 139, 130, 0.25);
+}
+
+/* Saving a template: the name comes first and is plain to see. */
+.tplsave {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(138, 180, 248, 0.35);
+  border-radius: 16px;
+  background: rgba(138, 180, 248, 0.07);
+}
+.tplsave__label { color: var(--accent); font-size: 13px; font-weight: 600; }
+.tplsave__row { display: flex; gap: 10px; }
+.tplsave__name {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1.5px solid var(--edge-hi);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+}
+.tplsave__name::placeholder { color: rgba(232, 234, 237, 0.55); }
+.tplsave__name:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(138, 180, 248, 0.25); }
+.tplsave .opt { margin-top: 0; }
+
+/* A picture fill: sharp, cropped to the frame, behind the video. */
+.ed__bg--pic { object-fit: cover; filter: none; transform: none; }
+
+/* With many lanes the timeline scrolls up and down rather than pushing the
+   picture away. */
+.timeline { max-height: 34vh; overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.25) transparent; }
+.timeline.is-compact { max-height: 24vh; }
+
+/* Projects in a folder, before its clips. */
+.gridhead { grid-column: 1 / -1; margin: 6px 0 -4px; color: var(--dim); font-size: 13px; font-weight: 550; }
+.gridhead:first-child { margin-top: 0; }
+.card__frame--new {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1.5px dashed var(--edge-hi);
+  background: rgba(138, 180, 248, 0.06);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 550;
+}
+.card:hover .card__frame--new { background: rgba(138, 180, 248, 0.12); }
+.card__project { background: rgba(255, 193, 77, 0.92); color: #2b1d00; }
+.card__del { left: auto; right: 8px; }
+.cardbox:hover .card__del { opacity: 1; }
+.card__del:hover { background: var(--bad); border-color: var(--bad); color: #3a0a06; }
+.sheet--tall { max-height: 92vh; overflow-y: auto; }
+.clipitem { position: relative; }
+.clipitem.is-on .clipitem__thumb { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.clipitem__n {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #06203f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.clipitem__kind { position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: rgba(0, 0, 0, 0.6); color: #fff; }
+@media (max-width: 1100px) {
+  .ed__textrow--top { flex-wrap: wrap; }
+  .ed__textrow--top .ed__textin { flex-basis: 100%; }
+}
+/* On the library's front page, project tiles are square like the folders. */
+.grid--folders .card__frame { aspect-ratio: 1 / 1; border-radius: 18px; }
+
+/* Smoothness. The scissors badge on every card used to blur what was behind
+   it, which cost every card a blur on each frame even while invisible; a
+   solid dark circle looks the same at that size. Clip cards off
+   screen are skipped entirely until they scroll into view. */
+.card__cut { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0, 0, 0, 0.7); }
+.grid .cardbox { content-visibility: auto; contain-intrinsic-size: auto 330px; }
+.card__frame { contain: paint; }

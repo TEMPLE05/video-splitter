@@ -10,6 +10,7 @@ import { mountCaptions } from './captions.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
+import { mountProjects } from './projects.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -441,7 +442,8 @@ function cleanLook (b) {
   }
   if (b.canvas !== undefined) {
     look.canvas = ASPECTS[b.canvas] ? b.canvas : 'original'
-    look.background = b.background === 'black' ? 'black' : 'blur'
+    look.background = b.background === 'black' ? 'black' : b.background === 'image' && b.bgImage ? 'image' : 'blur'
+    if (look.background === 'image') look.bgImage = String(b.bgImage).slice(0, 2000)
   }
   if (b.caption && typeof b.caption === 'object') {
     const c = b.caption
@@ -970,11 +972,12 @@ async function renderThumb (file, out) {
   await fsp.mkdir(path.dirname(out), { recursive: true })
   const tmp = out.replace(/\.jpg$/, `.${process.pid}.${Date.now()}.tmp.jpg`)
   // Half a second in usually skips a black opening frame. Clips shorter than
-  // that fall back to the very first frame.
-  for (const at of ['0.5', '0']) {
+  // that fall back to the very first frame. A still picture has no time at
+  // all, and any seek drops its only frame, so the last try has none.
+  for (const at of ['0.5', '0', null]) {
     const { code } = await run('ffmpeg', [
       '-hide_banner', '-loglevel', 'error', '-y',
-      '-ss', at, '-i', file,
+      ...(at === null ? [] : ['-ss', at]), '-i', file,
       '-frames:v', '1', '-an', '-sn',
       '-vf', "scale='min(360,iw)':-2",
       '-q:v', '6', '-update', '1', tmp
@@ -1442,8 +1445,13 @@ function frameSize (meta, crop, canvas, cap = 1920) {
  * vertical frame. The blur is done at a twelfth of the size, which looks the
  * same and costs almost nothing.
  */
-function fitInto (input, output, W, H, background, tag) {
+function fitInto (input, output, W, H, background, tag, picture) {
   const fg = `scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`
+  // A chosen picture behind the video, filling the frame edge to edge.
+  if (background === 'image' && picture) {
+    return `${picture}scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1[bb${tag}];` +
+      `${input}${fg}[ff${tag}];[bb${tag}][ff${tag}]overlay=(W-w)/2:(H-h)/2${output}`
+  }
   if (background === 'blur') {
     const sw = even(W / 12)
     const sh = even(H / 12)
@@ -1506,7 +1514,7 @@ function runTracked (args, job, outLen) {
  * the edit keeps exactly its length and everything timed to it (song, text,
  * captions) stays where it was put.
  */
-async function render ({ main, pieces, target, withOriginal, sounds, crop, canvas, background, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
+async function render ({ main, pieces, target, withOriginal, sounds, crop, canvas, background, bgFile, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
   const meta = main.meta
   const Q = QUALITY[quality] || QUALITY.standard
   const { W, H, padded } = frameSize(meta, crop, canvas, Q.cap)
@@ -1538,12 +1546,20 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
     return { type: TRANSITIONS[p.transition.type], d: eA + eB }
   })
 
+  // A picture fill is one more looped input per piece that needs it, placed
+  // after the pieces so their input numbers stay put.
+  const fillLengths = []
+  const pictureFor = (len) => {
+    if (background !== 'image' || !bgFile) return null
+    fillLengths.push(len)
+    return `[${pieces.length + fillLengths.length - 1}:v:0]`
+  }
   pieces.forEach((p, i) => {
     const len = pieceLength(p) + ext[i].before + ext[i].after
     const own = p.file === main.file
     if (p.kind === 'image') {
       args.push('-loop', '1', '-framerate', fps, '-t', String(len), '-i', p.file)
-      graph.push(fitInto(`[${i}:v:0]`, `[s${i}]`, W, H, background, i))
+      graph.push(fitInto(`[${i}:v:0]`, `[s${i}]`, W, H, background, i, pictureFor(len)))
     } else {
       args.push('-ss', String(p.start - ext[i].before), '-t', String(len), '-i', p.file)
       // The crop belongs to the clip it was drawn on; other clips are fitted.
@@ -1552,7 +1568,7 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
         : ''
       const fills = !own ? Math.abs(p.meta.width / p.meta.height - W / H) > 0.01 : padded
       if (!fills) graph.push(`[${i}:v:0]${cropText}scale=${W}:${H},setsar=1[s${i}]`)
-      else graph.push(fitInto(`[${i}:v:0]${cropText}`, `[s${i}]`, W, H, background, i))
+      else graph.push(fitInto(`[${i}:v:0]${cropText}`, `[s${i}]`, W, H, background, i, pictureFor(len)))
     }
     graph.push(`[s${i}]fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS,settb=AVTB[v${i}]`)
     if (withOriginal) {
@@ -1561,6 +1577,8 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
         : `[${i}:a:0]${AFMT},apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
     }
   })
+
+  for (const len of fillLengths) args.push('-loop', '1', '-framerate', fps, '-t', String(len), '-i', bgFile)
 
   // Runs of plain cuts, each joined with concat; then transitions between runs.
   const runs = [[0]]
@@ -1602,7 +1620,7 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
   // Added sounds, each placed at its own moment and mixed over the clip's
   // own sound. Only the part of each that falls inside this render is read.
   let audioOut = withOriginal ? '[base]' : null
-  let next = pieces.length
+  let next = pieces.length + fillLengths.length
   const added = []
   for (const snd of gif ? [] : sounds || []) {
     const from = Math.max(snd.at, at)
@@ -1712,18 +1730,23 @@ async function writeSrt (target, captions, at, len) {
  */
 async function doExport (body, job) {
   if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
-  const file = resolveInSource(decodeId(String(body.id)))
-  if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
+  // A project has no clip of its own: its frame is the shape it was made in,
+  // and every piece names the picture or clip it shows.
+  const project = body.project ? await projects.read(body.project) : null
+  const file = project ? null : resolveInSource(decodeId(String(body.id)))
+  if (!project && !fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
 
   const stripAudio = Boolean(body.stripAudio)
   const segments = Array.isArray(body.segments) ? body.segments : []
   if (segments.length === 0) throw httpError(400, 'Nothing to export. Keep at least one segment.')
   if (segments.length > 100) throw httpError(400, 'Too many pieces; keep it under 100')
 
-  const meta = await probe(file)
+  const meta = project
+    ? { width: project.width, height: project.height, fps: 30, duration: 0, hasVideo: true, hasAudio: false }
+    : await probe(file)
   if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
   const main = { file, meta }
-  const metas = new Map([[file, meta]])
+  const metas = new Map(project ? [] : [[file, meta]])
 
   const clean = []
   for (const seg of segments) {
@@ -1740,6 +1763,7 @@ async function doExport (body, job) {
     }
     // A piece can come from another clip in the library.
     let pfile = file
+    if (project && !(seg && seg.src)) throw httpError(400, 'A piece of the project does not say which clip it is from')
     if (seg && seg.src && seg.src !== body.id) {
       pfile = resolveInSource(decodeId(String(seg.src)))
       if (!VIDEO_EXT.has(path.extname(pfile).toLowerCase()) || !fs.existsSync(pfile)) throw httpError(404, 'A clip in the edit is no longer there')
@@ -1783,7 +1807,12 @@ async function doExport (body, job) {
   const look = body.look || {}
   const crop = cleanCrop(look.crop)
   const canvas = ASPECTS[look.canvas] ? look.canvas : 'original'
-  const background = look.background === 'black' ? 'black' : 'blur'
+  let bgFile = null
+  if (look.background === 'image' && look.bgImage) {
+    bgFile = resolveInSource(decodeId(String(look.bgImage)))
+    if (!IMAGE_EXT.has(path.extname(bgFile).toLowerCase()) || !fs.existsSync(bgFile)) throw httpError(404, 'The fill picture is no longer there')
+  }
+  const background = look.background === 'black' ? 'black' : bgFile ? 'image' : 'blur'
   const fades = { in: Math.min(Math.max(Number(look.fadeIn) || 0, 0), 5), out: Math.min(Math.max(Number(look.fadeOut) || 0, 0), 5) }
   const quality = QUALITY[body.quality] ? body.quality : 'standard'
   const gif = body.format === 'gif'
@@ -1798,11 +1827,11 @@ async function doExport (body, job) {
     clean.every((p) => p.kind === 'video' && p.file === file)
   const fast = body.mode === 'fast' && !body.join && plain
 
-  const outDir = path.join(path.dirname(file), 'edits')
+  const outDir = project ? path.join(resolveInSource(project.bucketName), 'edits') : path.join(path.dirname(file), 'edits')
   await fsp.mkdir(outDir, { recursive: true })
-  const stem = path.basename(file, path.extname(file))
+  const stem = project ? project.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').trim() || 'project' : path.basename(file, path.extname(file))
   const withOriginal = !gif && clean.some((p) => p.kind === 'video' && p.meta.hasAudio) && !stripAudio
-  const tracks = gif ? [] : await loadSubtitles(meta, file)
+  const tracks = gif || project ? [] : await loadSubtitles(meta, file)
   const temps = []
   if (job) { job.total = totalLen; job.base = 0; job.done = 0 }
 
@@ -1848,7 +1877,7 @@ async function doExport (body, job) {
       .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
       .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
 
-    const common = { main, withOriginal, sounds, crop, canvas, background, tracks, temps, overlayBlank, quality, gif, fades, job }
+    const common = { main, withOriginal, sounds, crop, canvas, background, bgFile, tracks, temps, overlayBlank, quality, gif, fades, job }
     if (job) job.stage = 'Exporting'
 
     // One finished video: every piece, in order, gaps closed. Always
@@ -2062,6 +2091,7 @@ app.post('/api/bucket/:id/audio', wrap(async (req, res) => {
 /* ----------------------------------------------------- static build, if any */
 
 mountFonts(app, { ROOT, wrap, httpError })
+const projects = mountProjects(app, { ROOT, wrap, httpError, getConfig: () => config })
 mountCaptions(app, { ROOT, CACHE_DIR, wrap, httpError, resolveInSource, decodeId, probe, haveTools })
 
 const DIST = path.join(ROOT, 'dist')
