@@ -101,3 +101,14 @@ export const listLooks = () => request('/api/looks')
 export const saveLook = (look) => request('/api/looks', json('POST', look))
 
 export const deleteLook = (id) => request('/api/looks/' + encodeURIComponent(id), { method: 'DELETE' })
+
+// Library housekeeping: the Recycle Bin, moving between buckets, tidying up.
+export const trashClips = (ids) => request('/api/clips/trash', json('POST', { ids }))
+
+export const moveClips = (ids, bucketId) => request('/api/clips/move', json('POST', { ids, bucketId }))
+
+export const tidyInfo = () => request('/api/tidy')
+
+export const tidyRun = () => request('/api/tidy', { method: 'POST' })
+
+export const tidyUndo = () => request('/api/tidy/undo', { method: 'POST' })

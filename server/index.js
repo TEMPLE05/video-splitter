@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
 import { mountEdits } from './edits.js'
+import { OTHER_FILES, mountLibrary } from './library.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -165,7 +166,8 @@ async function listBuckets () {
   } catch {
     return []
   }
-  const onDisk = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  // The tidy-up folder holds pictures and documents, never clips to sort.
+  const onDisk = entries.filter((e) => e.isDirectory() && e.name !== OTHER_FILES).map((e) => e.name)
 
   // Folders that already exist on disk count as buckets. That way the tool
   // adopts the layout you already have instead of ignoring it.
@@ -873,6 +875,9 @@ async function probe (file) {
 // so the existing /api/video route streams them with no change.
 // Saved edits, so the library can mark clips you have worked on.
 const savedEdits = mountEdits(app, { ROOT, wrap, httpError, resolveInSource, decodeId })
+mountLibrary(app, {
+  wrap, httpError, resolveInSource, decodeId, encodeId, getConfig: () => config, saveConfig, reservePath, savedEdits, VIDEO_EXT, isJunk
+})
 
 app.get('/api/bucket/:id', wrap(async (req, res) => {
   const bucket = config.buckets.find((b) => b.id === req.params.id)

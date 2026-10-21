@@ -19,6 +19,7 @@ function insertSorted (list, item) {
 
 const SHORTCUTS = [
   ['1 – 9', 'File into that bucket'],
+  ['F', 'Find any bucket by typing its name, then Enter to file'],
   ['Space', 'Play / pause'],
   ['← →', 'Seek 5 seconds'],
   ['M', 'Sound on / off'],
@@ -43,10 +44,26 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
   const playerRef = useRef(null)
   const inFlight = useRef(new Set())
   const draftRef = useRef(null)
+  // Typing part of a bucket's name reaches any of them, not just the first nine.
+  const [finding, setFinding] = useState(false)
+  const [query, setQuery] = useState('')
+  const [pick, setPick] = useState(0)
 
   const queue = state.queue
   const atEnd = cursor >= queue.length
   const current = atEnd ? null : queue[cursor]
+
+  const q = query.trim().toLowerCase()
+  const matches = !finding ? state.buckets : state.buckets
+    .filter((b) => b.name.toLowerCase().includes(q))
+    .sort((a, b) => (b.name.toLowerCase().startsWith(q) ? 1 : 0) - (a.name.toLowerCase().startsWith(q) ? 1 : 0))
+  const chosen = finding && matches.length ? matches[Math.min(pick, matches.length - 1)] : null
+
+  function closeFind () {
+    setFinding(false)
+    setQuery('')
+    setPick(0)
+  }
 
   const sorted = state.buckets.reduce((sum, b) => sum + b.count, 0)
   const total = sorted + queue.length
@@ -212,6 +229,12 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
         return
       }
 
+      if (event.code === 'KeyF' || event.key === '/') {
+        event.preventDefault()
+        setFinding(true)
+        return
+      }
+
       switch (event.code) {
         case 'Space':
           event.preventDefault()
@@ -353,8 +376,32 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
           <p className="dock__hint">Make a bucket to start filing</p>
         ) : null}
 
-        {state.buckets.map((bucket, i) => (
-          <div className="bubblewrap" key={bucket.id}>
+        {finding ? (
+          <div className="finder">
+            <input
+              className="finder__input"
+              autoFocus
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); setPick(0) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); closeFind() }
+                if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'Tab') { e.preventDefault(); setPick((p) => (matches.length ? (p + 1) % matches.length : 0)) }
+                if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); setPick((p) => (matches.length ? (p - 1 + matches.length) % matches.length : 0)) }
+                if (e.key === 'Enter' && chosen && current) { e.preventDefault(); fileInto(chosen); closeFind() }
+              }}
+              onBlur={() => { if (!query.trim()) closeFind() }}
+              placeholder="File into… type a bucket name"
+              aria-label="Find a bucket"
+              spellCheck={false}
+            />
+            <span className="finder__hint">{matches.length ? 'Enter files it · arrows choose · Esc closes' : 'No bucket by that name'}</span>
+          </div>
+        ) : null}
+
+        {matches.map((bucket) => {
+          const i = state.buckets.indexOf(bucket)
+          return (
+          <div className={'bubblewrap' + (chosen && chosen.id === bucket.id ? ' is-chosen' : '')} key={bucket.id}>
             <button
               className="bubble"
               onClick={() => fileInto(bucket)}
@@ -374,7 +421,14 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
               <Close size={12} />
             </button>
           </div>
-        ))}
+          )
+        })}
+
+        {!finding && state.buckets.length > 9 ? (
+          <button className="bubble bubble--find" onClick={() => setFinding(true)} title="Find a bucket by name (F)">
+            <span className="bubble__key">F</span> Find
+          </button>
+        ) : null}
 
         {adding ? (
           <form className="bubble bubble--form" onSubmit={addBucket}>
