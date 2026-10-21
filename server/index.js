@@ -271,9 +271,9 @@ async function snapshot () {
 /* ---------------------------------------------------------------------- app */
 
 const app = express()
-// Exports carry the editor's text as pictures, which for a captioned
-// episode can run to a few megabytes.
-app.use(express.json({ limit: '64mb' }))
+// Exports carry the editor's text as pictures, which for an animated or
+// word-by-word captioned episode can run to a hundred megabytes.
+app.use(express.json({ limit: '512mb' }))
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
@@ -1539,7 +1539,7 @@ app.post('/api/export', wrap(async (req, res) => {
   const canvas = ASPECTS[look.canvas] ? look.canvas : 'original'
   const background = look.background === 'black' ? 'black' : 'blur'
   const texts = Array.isArray(body.overlays) ? body.overlays : []
-  if (texts.length > 3000) throw httpError(400, 'Too many texts; keep it under 3000')
+  if (texts.length > 30000) throw httpError(400, 'Too much text animation in one export')
   const plain = !music && !crop && canvas === 'original' && !texts.length && clean.every((p) => p.kind === 'video')
   const fast = body.mode === 'fast' && !body.join && plain
 

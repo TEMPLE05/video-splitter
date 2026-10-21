@@ -206,7 +206,7 @@ export function TextLayer ({ texts, t, width, height, selectedId, onSelect, onMo
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, width, height)
     for (const x of shown) {
-      const L = drawText(ctx, x, width, height)
+      const L = drawText(ctx, x, width, height, t - x.start)
       if (x.id === selectedId) {
         ctx.save()
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
