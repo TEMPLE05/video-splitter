@@ -149,14 +149,20 @@ mouse movement or keypress brings it back.
 | Key | Action |
 | --- | --- |
 | `1`–`9` | File the current video into that bucket |
+| `F` or `/` | Find any bucket by typing part of its name; `Enter` files into it |
 | `Space` | Play / pause |
 | `←` `→` | Seek 5 seconds |
 | `M` | Sound on / off |
 | `R` | Restart the clip |
 | `S` | Skip, leave it in the queue |
+| `B` | Back to the video before |
 | `U` | Undo the last file |
 | `L` | Open the library |
 | `?` | Show the shortcut panel |
+
+Only the first nine buckets have number keys. With more than nine, a **Find**
+bubble appears: press `F`, type a few letters, and the bar narrows to the
+buckets that match. The arrow keys choose between them and `Enter` files.
 
 Videos start muted, because browsers block autoplay with sound until you
 interact with the page. Press `M` once and sound stays on.
@@ -185,7 +191,7 @@ Windows creates on its own, such as `desktop.ini`, do not count.
 The folder itself is only ever removed once it is empty, so even a file that
 appears at the last moment stops the removal rather than being lost.
 
-## Editing
+## The library
 
 Press `L` or the grid button to open the library. It works like File Explorer:
 a page of folders, one per bucket, each showing a frame from its first clip.
@@ -194,12 +200,36 @@ Click a folder to open it on its own screen. `Esc`, `Backspace` or the
 
 Each card shows a still frame. Rest the pointer on one and it plays a preview.
 Click it to open it in the editor. Coming back from the editor returns you to
-the same folder at the same scroll position.
+the same folder at the same scroll position. Clips you have worked on carry an
+**Edited** badge.
 
 Thumbnails are small images made once per clip and kept in a `.cache` folder
 next to the app, never inside your own folders. The first visit to a folder
-makes them as you look, a few at a time; after that they appear instantly. Only
-three load at once, so the rest of the app stays responsive while they do.
+makes them as you look, a few at a time; after that they appear instantly.
+
+### Choosing clips: move or delete
+
+The round tick in a card's corner selects it. `Ctrl`-click also selects,
+`Shift`-click selects everything between, and `Ctrl`+`A` selects the whole
+folder. Once anything is selected, a bar at the top offers:
+
+- **Move to…** another bucket, or back to the sorting queue to be sorted again.
+  Saved edits go with the clips.
+- **Delete**, which asks first and names what will go. Clips go to the
+  Windows **Recycle Bin** (the Trash on a Mac), where they can be restored.
+  Nothing is deleted outright. Exports and pulled audio stay where they are.
+
+`Delete` on the keyboard does the same, and `Esc` lets go of the selection.
+
+### Tidying up the main folder
+
+Phones save pictures, voice notes and documents next to the videos. When the
+main folder has files that are not videos, the library offers **Tidy up**. It
+moves them into one folder called `Other files`, sorted into Pictures, Audio,
+Documents and Other, and **Put them back** undoes it. Nothing is deleted, and
+`Other files` is never mistaken for a bucket.
+
+## Editing
 
 The editor is laid out like CapCut on a phone: the picture on top, the timeline
 under it, the tools along the bottom. The playhead stays in the middle and the
@@ -220,9 +250,19 @@ are skipped, and the gap they leave closes up.
 - **Select** a piece by clicking it. It gets a white frame with a handle at
   each end. **Drag a handle** to trim that end; the preview shows the frame you
   are trimming to. **Delete** removes the selected piece.
+- **Move** a selected piece by dragging it along the timeline; a blue line
+  shows where it will land. `Alt` + `←` `→` moves it one place.
 - **Undo** and **redo** cover every change, a hundred steps back.
-- **Sound on / off** turns the clip's own sound off, for the preview and the
-  export, so you can lay your own audio over it.
+
+### Saved as you go
+
+Every change is saved a moment after you make it, and once more as you leave,
+so closing the editor, or the whole app, loses nothing. Opening the clip again
+picks up exactly where you left off. **Start over** at the top goes back to the
+whole clip untouched; it is an undoable step like any other.
+
+Saves are small files in an `.edits` folder next to the app, never in your own
+folders. A clip moved to another bucket keeps its edit.
 
 ### One video or separate parts
 
@@ -234,6 +274,22 @@ switches the export to **separate parts**, one file per piece. A ten minute
 video into five parts gives five two-minute files. If you had already made
 cuts, it starts again from the whole clip; undo brings your cuts back. You can
 switch between one video and separate parts in the export window at any time.
+
+### Transitions, fades and more clips
+
+- **Transitions.** Every cut has a small square on the timeline. Click it to
+  pick Fade, Black, White, Slide, Wipe, Zoom, Circle or Blur, and how long it
+  lasts; **Use on every cut** copies it to all of them. A transition borrows a
+  little footage from just beyond the cut, so the edit keeps its length and
+  your song, text and captions stay where you put them. If both pieces run to
+  the very end of their clips at that cut, there is nothing to borrow, and the
+  panel says so.
+- **Fades.** The Transitions tool also fades the whole video in from black and
+  out to black, picture and sound together.
+- **Add clip** brings another clip from any bucket into the same edit, after
+  the selected piece or at the end. Trim, split and move it like any other
+  piece. A clip of a different shape is fitted into the frame with the blurred
+  fill.
 
 ### Sound, crop, canvas and pictures
 
@@ -255,23 +311,46 @@ switch between one video and separate parts in the export window at any time.
   handles to change how long it shows, or delete it. Pictures from your
   computer are copied into the bucket's `images` folder.
 
-The preview shows all of this as it will come out, and Undo covers every
-change. The export re-encodes when any of these are used; the fast cut is only
-offered when none are.
+### Text
 
-### Text and auto captions
+**Text** adds a line of text at the playhead, showing for three seconds. Type
+into the box; the tabs underneath set the rest:
 
-- **Text** adds a line of text at the playhead, showing for three seconds.
-  Type into the box, then pick a font, a style (outline, box, shadow or plain),
-  a colour and a size. Drag the text on the picture to move it; it snaps to the
-  middle. On the timeline it is an amber bar: drag it to change when it shows,
-  or drag its ends to change how long.
-- **Captions** listens to the speech in the edit and writes it out a few words
-  at a time, the way TikTok and CapCut show them. Click any caption, on the
-  picture or the timeline, to fix a word or restyle it, and "Use this style for
-  all captions" copies that look to every one. Captions are violet bars on the
-  timeline. Make your cuts first: captions follow the edit as it is when you
-  make them.
+- **Font:** Clean, Heavy, Black, Narrow, Serif, Type, Hand and Script.
+- **Style:** Outline, Box, Pill, Marker, Shadow, Lifted, Neon, Hollow and
+  Plain.
+- **Animation:** Pop, Fade, Rise, Typewriter, Wobble, Bounce and Pulse.
+  Hand lettering wobbles by default, a small shake eight times a second, like
+  a line drawn by hand.
+- **Colour**, and a size slider.
+
+Drag the text on the picture to move it; it snaps to the middle. On the
+timeline it is an amber bar: drag it to change when it shows, or drag its ends
+to change how long. Text is drawn by the editor and laid over the video on
+export, animation included, so the finished file looks exactly like the
+preview.
+
+### Auto captions
+
+**Captions** listens to the speech in the edit and writes it out a few words
+at a time, the way TikTok and CapCut show them. They are violet bars on the
+timeline.
+
+- **Make your cuts first.** Captions are timed to the edit as it is when you
+  make them. If you split, delete, trim or move pieces afterwards, a notice
+  says the captions may be out of step and offers to make them again.
+- **Check them before you export.** Speech recognition gets names and unusual
+  words wrong sometimes. Click any caption, on the picture or the timeline, to
+  fix a word. Nothing is final until you export, and the export window reminds
+  you.
+- **Names and words to spell right** is a list, remembered between clips, such
+  as `Messi, Inter Miami`. A heard word that is close to a listed name, like
+  "Messy", is written the listed way.
+- **Translate into English** turns speech in another language into English
+  captions.
+- **Word by word** is an animation for captions: the word being spoken lights
+  up in a second colour. **Use this look for all captions** copies one
+  caption's font, style, colour, size, place and animation to every caption.
 
 Captions are worked out on this computer by [whisper.cpp](https://github.com/ggml-org/whisper.cpp);
 nothing is uploaded. The first time anyone asks for captions, the app offers a
@@ -281,8 +360,15 @@ offline. A short clip takes a few seconds; a nine-minute episode about a
 minute. On macOS and Linux, install whisper.cpp so `whisper-cli` is on your
 PATH and the app uses that instead.
 
-Text is drawn by the editor and laid over the video on export, so the finished
-file looks exactly like the preview.
+### Looks
+
+A look is a saved crop, shape and fill, caption style and fades, under a name
+such as "TikTok vertical". **Looks** saves the current clip's look, with a tick
+for each part to include, and puts a saved look on any clip in one go. A look
+can also make the captions straight away, in its saved style.
+
+A crop saved on a tall clip still works on a wide one: it keeps the same output
+shape and the same centre. Using a look is one undo step.
 
 ### Pulling the audio out
 
@@ -294,10 +380,11 @@ instant and bit for bit identical, because nothing is re-encoded. **As mp3**
 converts instead, which more players accept but does lose a little quality to
 the second encode. A whole bucket can be done at once from its library page.
 
-### Where exports go
+### Exporting
 
-Into an `edits` subfolder inside the bucket the clip came from. Originals are
-never modified, and the export window shows the full path after it finishes.
+Exports go into an `edits` subfolder inside the bucket the clip came from.
+Originals are never modified, and the export window shows the full path after
+it finishes.
 
 ```
 <your folder>/
@@ -305,51 +392,63 @@ never modified, and the export window shows the full path after it finishes.
     long clip.mp4              the original, untouched
     edits/
       long clip edit.mp4       one finished video
+      long clip edit.srt       its captions as a subtitle file, if asked for
       long clip part 1.mp4     or one file per piece
       long clip part 2.mp4
 ```
 
-Nothing is ever overwritten: a name that is already taken becomes `… (2).mp4`.
+The export window offers:
+
+- **Video (MP4)** or **GIF**. A GIF is a small looping picture with no sound,
+  up to a minute long.
+- **Quality:** High (best picture, bigger file), Standard, or Small (at most
+  1280 pixels tall, for sending on).
+- **Also save the captions as a subtitle file**, an `.srt` beside the video.
+
+A progress bar shows how far along it is, and **Stop** ends it part way;
+nothing half-written is left behind. Nothing is ever overwritten: a name that
+is already taken becomes `… (2).mp4`, even for two exports started together.
 
 | Key | Action |
 | --- | --- |
 | `Space` | Play / pause |
 | `S` or `Ctrl`+`B` | Split at the playhead |
-| `Delete` | Delete the selected piece |
+| `Delete` | Delete the selected piece or text |
+| `Alt` + `←` `→` | Move the selected piece one place |
 | `Ctrl`+`Z` | Undo |
 | `Ctrl`+`Shift`+`Z` or `Ctrl`+`Y` | Redo |
 | `←` `→` | One frame back or forward, hold `Shift` for a second |
 | `Home` `End` | Start or end of the edit |
 | `+` `−` | Zoom in or out |
 | `M` | Mute the preview only |
-| `Esc` | Deselect, then back to the library |
+| `Esc` | Close a panel, deselect, then back to the library |
 
 ### Accurate versus fast
 
 Exports re-encode, which makes every cut land on the exact frame you chose. It
 takes a few seconds for a short clip.
 
-When exporting separate parts, a "fast cut" option stream-copies instead. It is
-close to instant, but a stream copy can only start on a keyframe, so each part
-starts on the keyframe at or before the point you chose. The export window says
-exactly where each part really starts. The file holds only what plays: no
-hidden footage before the start. One finished video is always re-encoded,
-since joining stream-copied pieces glitches at every cut.
+When exporting separate parts with nothing added, a "fast cut" option
+stream-copies instead. It is close to instant, but a stream copy can only start
+on a keyframe, so each part starts on the keyframe at or before the point you
+chose. The export window says exactly where each part really starts. The file
+holds only what plays: no hidden footage before the start.
 
-Text subtitles (SRT, ASS, WebVTT) are kept, retimed to the edit: lines in
-pieces you cut out disappear, and the rest move with their pieces. Picture
-subtitles from Blu-ray or DVD rips cannot go into an mp4 and are left out.
-
-Two exports started at the same moment never overwrite each other; the second
-gets a `(2)` name.
+Text subtitles already inside a clip (SRT, ASS, WebVTT) are kept, retimed to
+the edit: lines in pieces you cut out disappear, and the rest move with their
+pieces. Picture subtitles from Blu-ray or DVD rips cannot go into an mp4 and
+are left out.
 
 ## Safety
 
 - Filing moves files, never copies, and never overwrites. A name collision
   becomes `clip (2).mp4`.
-- Every move is undoable for the whole session.
+- Every filing is undoable for the whole session.
 - Removing a bucket only removes it from the bar. The folder and the videos
   already filed into it stay on disk.
+- Deleting clips from the library sends them to the Recycle Bin after asking,
+  never deletes them outright.
+- Tidying up only moves files, into one folder, and can be put back.
 - Moves fall back to copy-then-delete when a bucket is on another drive.
 - Exports are written alongside the original, never over it.
 - Every path the server touches is checked to resolve inside the source
@@ -364,40 +463,51 @@ a preview, because browsers cannot decode them.
 ## Configuration
 
 `videosplitter.config.json` is written next to `package.json` and holds the
-source folder and bucket list. Delete it to start clean. It is gitignored.
+source folder, the bucket list and your saved looks. Delete it to start clean.
+It is gitignored.
 
-`.cache` holds the library's thumbnails and the editor's frame strips and
-waveforms. It is safe to delete at any time; they are simply made again as
-needed. It is gitignored too.
+`.edits` holds your saved edits. Deleting it loses the cuts you have not
+exported yet, so leave it unless you mean to.
+
+`.cache` holds the library's thumbnails and the editor's frame strips,
+waveforms and captions. It is safe to delete at any time; they are simply made
+again as needed.
+
+`.tools` holds whisper.cpp and its language model, once downloaded for
+captions. Deleting it just means downloading them again next time.
+
+All four are gitignored.
 
 ## Still to come
+
+**Speed.** Slow motion and speeding pieces up are being designed.
 
 **Publishing.** Upload a finished clip straight to YouTube. This needs a Google
 Cloud project, OAuth consent and the YouTube Data API, and unverified apps are
 capped at private uploads until review. Worth treating as optional.
 
-**Export progress.** FFmpeg currently runs to completion before the interface
-hears anything back. Short clips finish in seconds, so this only starts to
-matter on long videos.
-
 ## Layout
 
 ```
-server/index.js       API: scans folders, streams video, moves files, runs FFmpeg
+server/index.js       API: scans folders, streams video, moves files, renders exports
+server/captions.js    Downloads whisper.cpp on first use and transcribes the edit
+server/edits.js       Saves each clip's edit as you work
+server/library.js     Recycle Bin, moving clips between buckets, tidying up
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
 src/Player.jsx        Video stage and transport for sorting
-src/Library.jsx       Folder page and clip grid, File Explorer style
+src/Library.jsx       Folder page and clip grid, File Explorer style, selection
 src/Thumb.jsx         Thumbnail loader, capped at three requests at once
 src/ConfirmRemove.jsx Checks a bucket's contents before allowing removal
-src/Editor.jsx        The editor screen, its tools and the export window
+src/Editor.jsx        The editor screen and its tools
 src/editor/model.js   The edit as a list of pieces, and the operations on it
-src/editor/Timeline.jsx  Canvas timeline: frames, waveform, trimming, scrubbing
-src/editor/usePlayback.js  Plays the edit: two videos swapped at cuts, pictures, the added song
-src/editor/Stage.jsx  The picture as exported: crop, canvas, blurred fill, crop box, text
-src/editor/text.js    Draws text, the same for preview and export; groups words into captions
+src/editor/Timeline.jsx    Canvas timeline: frames, waveform, trimming, moving, cuts
+src/editor/usePlayback.js  Plays the edit: two players, clips, pictures, transitions, song
+src/editor/Stage.jsx  The picture as exported: crop, canvas, fill, blends, text
+src/editor/text.js    Draws and animates text, the same for preview and export
 src/editor/frame.js   Size of the finished frame, matching the server
-server/captions.js    Downloads whisper.cpp on first use and transcribes the edit
+src/editor/panels.jsx Panels under the timeline: text, sound, transitions, splitting
+src/editor/sheets.jsx Windows: export, captions, looks, adding clips and media
 src/SourcePicker.jsx  Server-side folder browser
 src/icons.jsx         Inline SVG icon set
 src/api.js            Fetch wrappers
