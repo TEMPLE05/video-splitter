@@ -3,16 +3,16 @@ import { useEffect, useRef, useState } from 'react'
 import Timeline from './editor/Timeline.jsx'
 import Stage, { ASPECTS } from './editor/Stage.jsx'
 import { CAPTION_LOOK, captionChunks, newText, rescaleWords, retimeWords } from './editor/text.js'
-import { Choice, PartsSplit, SoundPanel, TextPanel, Tool, TypedSplit } from './editor/panels.jsx'
-import { AudioSheet, CaptionsSheet, ExportSheet, MediaSheet } from './editor/sheets.jsx'
+import { Choice, PartsSplit, SoundPanel, TextPanel, Tool, TransitionPanel, TypedSplit } from './editor/panels.jsx'
+import { AudioSheet, CaptionsSheet, ClipSheet, ExportSheet, MediaSheet } from './editor/sheets.jsx'
 import usePlayback from './editor/usePlayback.js'
 import {
   formatClock, imagePiece, initial, insertAfter, isImage, offsets as offsetsOf, parseClock, removePiece, splitAt,
-  splitEvenly, total as totalOf, trimPiece
+  splitEvenly, total as totalOf, transitionWindows, trimPiece
 } from './editor/model.js'
 import {
   Aspect, Back, Captions, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
-  TextIcon, Timer, Trash, Undo, VolumeOff, VolumeOn
+  Film, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
 import { getStrip, getWave, loadEdit, probeVideo, saveEdit, videoUrl } from './api.js'
 
@@ -88,9 +88,11 @@ export default function Editor ({ video, bucket, onBack }) {
   // Only a text just added takes the keyboard; one brought back by redo must not.
   const [freshTextId, setFreshTextId] = useState(null)
 
-  const [strip, setStrip] = useState(null)
-  const [stripImg, setStripImg] = useState(null)
-  const [wave, setWave] = useState(null)
+  // Every clip the edit uses: its details, and its frames and sound for the timeline.
+  const [clips, setClips] = useState({})
+  const [sources, setSources] = useState({})
+  const sourcing = useRef(new Set())
+  const [selectedJoin, setSelectedJoin] = useState(null)
   const [songWave, setSongWave] = useState(null)
   const imagesRef = useRef({})
   const [, setImagesLoaded] = useState(0)
@@ -119,11 +121,48 @@ export default function Editor ({ video, bucket, onBack }) {
   const frame = 1 / fps
   const duration = info?.duration || 0
 
+  const durationOf = (p) => (isImage(p) ? Infinity : clips[p.src || video.id]?.duration ?? Infinity)
+
   const pb = usePlayback(pieces, edit?.pieces, fps, {
     videoMuted: previewMuted || soundOff,
     musicMuted: previewMuted,
-    music: music ? { url: videoUrl(music.id), offset: music.offset, volume: music.volume, duration: music.duration } : null
+    music: music ? { url: videoUrl(music.id), offset: music.offset, volume: music.volume, duration: music.duration } : null,
+    mainId: video.id,
+    durationOf
   })
+
+  /** Fetches a clip's frame strip and waveform once, for its pieces on the timeline. */
+  function loadSource (id) {
+    if (sourcing.current.has(id)) return
+    sourcing.current.add(id)
+    const put = (patch) => setSources((m) => ({ ...m, [id]: { ...m[id], ...patch } }))
+    // These decode the whole file the first time, which takes a second or
+    // two on an episode, so the editor opens without them.
+    getStrip(id)
+      .then((st) => {
+        put({ strip: st })
+        if (st.none) return
+        const img = new Image()
+        img.onload = () => put({ img })
+        img.src = st.image
+      })
+      .catch(() => put({ strip: { none: true } }))
+    getWave(id)
+      .then((w) => put({ rate: w.rate, peaks: w.hasAudio && w.peaks ? decodePeaks(w.peaks) : null }))
+      .catch(() => put({ rate: 50, peaks: null }))
+  }
+
+  // Pieces from other clips need those clips' details and timeline media.
+  useEffect(() => {
+    for (const p of pieces) {
+      if (!p.src || p.src === video.id) continue
+      loadSource(p.src)
+      if (clips[p.src] || sourcing.current.has('probe:' + p.src)) continue
+      sourcing.current.add('probe:' + p.src)
+      probeVideo(p.src).then((d) => setClips((m) => ({ ...m, [p.src]: d }))).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pieces])
 
   useEffect(() => {
     let cancelled = false
@@ -133,6 +172,7 @@ export default function Editor ({ video, bucket, onBack }) {
         if (!d.hasVideo) throw new Error('This file has no picture to edit.')
         if (!(d.duration > 0)) throw new Error('Could not read how long this clip is.')
         setInfo(d)
+        setClips((m) => ({ ...m, [video.id]: d }))
         // Picks up where you left off, if this clip was edited before.
         return loadEdit(video.id).catch(() => null).then((saved) => {
           if (cancelled) return
@@ -150,24 +190,7 @@ export default function Editor ({ video, bucket, onBack }) {
       })
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
 
-    // The strip and the waveform decode the whole file the first time, which
-    // takes a second or two on an episode, so the editor opens without them.
-    getStrip(video.id)
-      .then((s) => {
-        if (cancelled) return
-        setStrip(s)
-        if (s.none) return
-        const img = new Image()
-        img.onload = () => { if (!cancelled) setStripImg(img) }
-        img.src = s.image
-      })
-      .catch(() => { if (!cancelled) setStrip({ none: true }) })
-    getWave(video.id)
-      .then((w) => {
-        if (cancelled) return
-        setWave({ rate: w.rate, peaks: w.hasAudio && w.peaks ? decodePeaks(w.peaks) : null })
-      })
-      .catch(() => { if (!cancelled) setWave({ rate: 50, peaks: null }) })
+    loadSource(video.id)
 
     return () => { cancelled = true; clearTimeout(noteTimer.current) }
   }, [video.id])
@@ -305,6 +328,20 @@ export default function Editor ({ video, bucket, onBack }) {
     setSelectedId(null)
   }
 
+  /** Moves a piece to another place in the edit; the playhead goes with it. */
+  function reorder (id, to) {
+    const from = pieces.findIndex((p) => p.id === id)
+    if (from < 0) return
+    const rest = pieces.filter((p) => p.id !== id)
+    const at = Math.min(Math.max(to, 0), rest.length)
+    if (at === from) return
+    const next = [...rest.slice(0, at), pieces[from], ...rest.slice(at)]
+    commit(next)
+    setSelectedId(id)
+    pb.seek(offsetsOf(next)[at], next)
+    flash(`Moved to position ${at + 1} of ${next.length}`)
+  }
+
   function onTrim ({ id, edge, to, phase }) {
     if (phase === 'start') {
       pb.pause()
@@ -314,7 +351,7 @@ export default function Editor ({ video, bucket, onBack }) {
     }
     const base = trimBase.current
     if (!base) return
-    const next = trimPiece(base.list, id, edge, to, duration, MIN_PIECE)
+    const next = trimPiece(base.list, id, edge, to, durationOf, MIN_PIECE)
     const before = base.list.find((p) => p.id === id)
     const after = next.find((p) => p.id === id)
 
@@ -324,7 +361,7 @@ export default function Editor ({ video, bucket, onBack }) {
       // edge, so the handle stays under the pointer. Everything after a right
       // edge ripples along live.
       if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
-      if (!isImage(after)) pb.peek(edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
+      if (!isImage(after)) pb.peek(after, edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
       return
     }
 
@@ -526,6 +563,34 @@ export default function Editor ({ video, bucket, onBack }) {
       : 'No speech was found in this edit')
   }
 
+  /* ------------------------------------------------------- transitions */
+
+  function setTransition (k, type, d, key) {
+    const next = pieces.map((p, i) => (i === k ? { ...p, transition: type ? { type, d } : null } : p))
+    commitEdit({ pieces: next }, key)
+  }
+
+  function transitionEverywhere (type, d) {
+    commitEdit({ pieces: pieces.map((p, i) => (i === 0 ? p : { ...p, transition: { type, d } })) })
+    flash(`Every cut now has a ${type} transition`)
+  }
+
+  /* ------------------------------------------------------------- clips */
+
+  /** Adds another clip, whole, after the selected piece or at the end. */
+  async function addClip (v) {
+    const d = clips[v.id] || await probeVideo(v.id)
+    if (!d.hasVideo || !(d.duration > 0)) throw new Error('That clip has no picture to add')
+    setClips((m) => ({ ...m, [v.id]: d }))
+    const piece = { id: newId(), ...(v.id === video.id ? {} : { src: v.id }), start: 0, end: d.duration }
+    const next = insertAfter(pieces, piece, selectedId || pieces[pieces.length - 1]?.id)
+    commit(next)
+    setSheet(null)
+    setSelectedId(piece.id)
+    pb.seek(offsetsOf(next)[next.indexOf(piece)], next)
+    flash(`Added ${v.name}. Trim it with its white handles, or drag it to move it.`)
+  }
+
   /* -------------------------------------------------------------- keys */
 
   useEffect(() => {
@@ -544,6 +609,12 @@ export default function Editor ({ video, bucket, onBack }) {
       if (ctrl && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
       if (ctrl && e.code === 'KeyY') { e.preventDefault(); redo(); return }
       if (ctrl && e.code === 'KeyB') { e.preventDefault(); split(); return }
+      // Alt + arrows move the selected piece one place earlier or later.
+      if (e.altKey && selected && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
+        e.preventDefault()
+        reorder(selected.id, selectedIndex + (e.code === 'ArrowLeft' ? -1 : 1))
+        return
+      }
       if (ctrl || e.altKey) return
 
       switch (e.code) {
@@ -601,7 +672,7 @@ export default function Editor ({ video, bucket, onBack }) {
   if (note) status = note
   else if (selectedText) status = `${selectedText.caption ? 'Caption' : 'Text'} · ${formatClock(selectedText.start, true)} to ${formatClock(selectedText.end, true)} · drag it on the picture to move it`
   else if (selected && isImage(selected)) status = `Picture · shows for ${formatClock(selected.end - selected.start, true)} · drag the white handles to change`
-  else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim`
+  else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim${pieces.length > 1 ? ', or drag the piece to move it' : ''}`
   else if (pieces.length > 1) status = `${pieces.length} pieces`
 
   return (
@@ -638,8 +709,8 @@ export default function Editor ({ video, bucket, onBack }) {
         cropRatio={cropRatio}
         onCrop={onCrop}
         pb={pb}
-        src={videoUrl(video.id)}
-        stillUrl={pb.still ? videoUrl(pb.still) : undefined}
+        clips={clips}
+        mainId={video.id}
         onClick={() => hist && pb.toggle()}
         loading={!hist}
         texts={texts}
@@ -680,11 +751,10 @@ export default function Editor ({ video, bucket, onBack }) {
         pieces={pieces}
         t={pb.t}
         pps={pps}
-        strip={strip}
-        stripImg={stripImg}
+        media={(p) => (isImage(p) ? {} : sources[p.src || video.id] || {})}
+        selectedJoin={panel === 'transition' ? selectedJoin : null}
+        onJoin={(k) => { pb.pause(); setSelectedJoin(k); setSelectedId(null); setPanel('transition') }}
         images={imagesRef.current}
-        peaks={wave ? wave.peaks : undefined}
-        waveRate={wave?.rate || 50}
         soundOff={soundOff}
         music={music ? { ...music, peaks: songWave?.id === music.id ? songWave.peaks : null, rate: songWave?.rate } : null}
         musicDragging={Boolean(musicDraft)}
@@ -697,6 +767,7 @@ export default function Editor ({ video, bucket, onBack }) {
         onText={onText}
         onAddText={addText}
         onTrim={onTrim}
+        onReorder={reorder}
         onZoom={zoomBy}
         onMusic={onMusic}
         onAddMusic={() => { pb.pause(); setSheet('audio-pick') }}
@@ -753,6 +824,19 @@ export default function Editor ({ video, bucket, onBack }) {
           onClose={() => selectText(null)}
         />
       ) : null}
+      {panel === 'transition' ? (
+        <TransitionPanel
+          join={selectedJoin && selectedJoin < pieces.length ? selectedJoin : null}
+          piece={selectedJoin ? pieces[selectedJoin] : null}
+          count={pieces.length}
+          look={look}
+          playable={Boolean(selectedJoin && transitionWindows(pieces, durationOf)[selectedJoin])}
+          onSet={(type, d, key) => setTransition(selectedJoin, type, d, key)}
+          onAll={transitionEverywhere}
+          onFades={(patch) => setLook(patch)}
+          onClose={() => { setPanel(null); setSelectedJoin(null) }}
+        />
+      ) : null}
       {panel === 'sound' && music ? (
         <SoundPanel
           music={music}
@@ -787,6 +871,15 @@ export default function Editor ({ video, bucket, onBack }) {
         <span className="ed__tools-sep" />
         <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist} />
         <Tool icon={<Aspect />} label="Canvas" onClick={() => togglePanel('canvas')} on={panel === 'canvas' || look.canvas !== 'original'} disabled={!hist} />
+        <Tool
+          icon={<Transition />}
+          label="Transitions"
+          onClick={() => { pb.pause(); setSelectedJoin(null); togglePanel('transition') }}
+          on={panel === 'transition' || pieces.some((p) => p.transition) || Boolean(look.fadeIn || look.fadeOut)}
+          disabled={!hist}
+        />
+        <Tool icon={<Film />} label="Add clip" onClick={() => { pb.pause(); setSheet('clip-pick') }} disabled={!hist} />
+        <span className="ed__tools-sep" />
         <Tool icon={<TextIcon />} label="Text" onClick={addText} disabled={!hist} />
         <Tool
           icon={<Captions />}
@@ -843,6 +936,7 @@ export default function Editor ({ video, bucket, onBack }) {
           onClose={() => setSheet(null)}
         />
       ) : null}
+      {sheet === 'clip-pick' ? <ClipSheet bucket={bucket} mainId={video.id} onPick={addClip} onClose={() => setSheet(null)} /> : null}
       {sheet === 'audio' ? <AudioSheet video={video} bucket={bucket} onClose={() => setSheet(null)} /> : null}
       {sheet === 'audio-pick' ? <MediaSheet kind="audio" bucket={bucket} onPick={addSong} onClose={() => setSheet(null)} /> : null}
       {sheet === 'image-pick' ? <MediaSheet kind="image" bucket={bucket} onPick={addPicture} onClose={() => setSheet(null)} /> : null}

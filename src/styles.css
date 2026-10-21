@@ -1638,3 +1638,54 @@ kbd {
   font-weight: 600;
 }
 .ed__saved { color: var(--faint); font-size: 12px; }
+
+/* Each picture source in its own layer, so two can blend in a transition. */
+.ed__layer { position: absolute; overflow: hidden; will-change: opacity, transform; }
+.ed__layer .ed__video { opacity: 1; }
+.ed__flash { position: absolute; inset: 0; z-index: 4; background: #fff; pointer-events: none; }
+.sheet__row { margin-top: 12px; }
+.ed__select {
+  padding: 5px 8px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: #16181c;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.cliplist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+  max-height: 300px;
+  margin-top: 12px;
+  overflow-y: auto;
+}
+.clipitem {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.clipitem__thumb {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  object-fit: cover;
+  background: #0b0b0d;
+}
+.clipitem:hover .clipitem__thumb { border-color: var(--edge-hi); }
+.clipitem:disabled { opacity: 0.5; cursor: wait; }
+.clipitem__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Above the picture layers, which use z-index 1 to 3 while blending. */
+.ed__bg { z-index: 0; }
+.ed__texts { z-index: 6; }
+.crop { z-index: 7; }

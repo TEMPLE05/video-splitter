@@ -121,6 +121,11 @@ export default function Timeline (props) {
     return { p, W, cx, X, rects, end, song, bars }
   }
 
+  function dropIndex (id, x) {
+    const { rects } = layout()
+    return rects.filter((r) => r.piece.id !== id && (r.x0 + r.x1) / 2 < x).length
+  }
+
   function hitTest (x, y) {
     const { p, rects, song, bars } = layout()
     if (y < CLIP_TOP - 2) return { zone: 'ruler' }
@@ -141,11 +146,19 @@ export default function Timeline (props) {
       return p.music ? { zone: 'none' } : { zone: 'addmusic' }
     }
     if (y > CLIP_TOP + CLIP_H + 4) return { zone: 'none' }
+    const cy = CLIP_TOP + CLIP_H / 2
+    if (Math.abs(y - cy) <= 11) {
+      for (let k = 1; k < rects.length; k++) {
+        if (rects[k].piece.id === p.selectedId || rects[k - 1].piece.id === p.selectedId) continue
+        if (Math.abs(x - rects[k].x0) <= 10) return { zone: 'join', k }
+      }
+    }
     const sel = rects.find((r) => r.piece.id === p.selectedId)
     if (sel) {
       const mid = (sel.x0 + sel.x1) / 2
       if (x >= sel.x0 - 6 && x <= Math.min(sel.x0 + HANDLE + 2, mid)) return { zone: 'handle', edge: 'start', piece: sel.piece }
       if (x <= sel.x1 + 6 && x >= Math.max(sel.x1 - HANDLE - 2, mid)) return { zone: 'handle', edge: 'end', piece: sel.piece }
+      if (x > sel.x0 && x < sel.x1 && p.pieces.length > 1) return { zone: 'move', piece: sel.piece }
     }
     const under = rects.find((r) => x >= r.x0 && x < r.x1)
     return under ? { zone: 'clip', piece: under.piece } : { zone: 'none' }
@@ -187,10 +200,13 @@ export default function Timeline (props) {
     }
 
     const top = CLIP_TOP
-    const strip = p.strip && !p.strip.none ? p.strip : null
-    const tileW = strip ? (strip.frameW * FRAMES_H) / strip.frameH : 0
 
     for (const { piece, x0, x1 } of rects) {
+      const media = (p.media && p.media(piece)) || {}
+      const strip = media.strip && !media.strip.none ? media.strip : null
+      const stripImg = media.img
+      const peaks = media.peaks
+      const tileW = strip ? (strip.frameW * FRAMES_H) / strip.frameH : 0
       if (x1 < -2 || x0 > W + 2) continue
       // A hairline gap between pieces, so every cut is visible.
       const a = x0 + 1
@@ -217,14 +233,14 @@ export default function Timeline (props) {
         for (let k = Math.max(0, Math.floor((-a) / tw)); a + k * tw < Math.min(b, W); k++) {
           ctx.drawImage(still, sx, sy, sw, sh, a + k * tw, top, tw + 0.5, FRAMES_H)
         }
-      } else if (strip && p.stripImg && !isImage(piece)) {
+      } else if (strip && stripImg && !isImage(piece)) {
         const from = Math.max(0, Math.floor((-a) / tileW))
         for (let k = from; a + k * tileW < Math.min(b, W); k++) {
           const tx = a + k * tileW
           const src = Math.min(piece.start + (k * tileW + tileW / 2) / p.pps, piece.end)
           const idx = lastAtOrBefore(strip.times, src)
           ctx.drawImage(
-            p.stripImg,
+            stripImg,
             (idx % strip.cols) * strip.frameW, Math.floor(idx / strip.cols) * strip.frameH,
             strip.frameW, strip.frameH,
             tx, top, tileW + 0.5, FRAMES_H
@@ -239,20 +255,20 @@ export default function Timeline (props) {
       if (isImage(piece)) {
         ctx.fillStyle = 'rgba(232, 234, 237, 0.14)'
         ctx.fillRect(a, wy + WAVE_H / 2, w, 1)
-      } else if (p.peaks && p.peaks.length) {
+      } else if (peaks && peaks.length) {
         ctx.fillStyle = p.soundOff ? 'rgba(232, 234, 237, 0.18)' : 'rgba(138, 180, 248, 0.8)'
         const mid = wy + WAVE_H / 2
-        const rate = p.waveRate
+        const rate = media.rate || 50
         for (let px = Math.max(a, 0); px < Math.min(b, W); px += 2) {
           const s0 = piece.start + (px - a) / p.pps
           const i0 = Math.floor(s0 * rate)
-          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, p.peaks.length)
+          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, peaks.length)
           let peak = 0
-          for (let i = i0; i < i1; i++) if (p.peaks[i] > peak) peak = p.peaks[i]
+          for (let i = i0; i < i1; i++) if (peaks[i] > peak) peak = peaks[i]
           const h = Math.max(1, (peak / 255) * (WAVE_H - 6))
           ctx.fillRect(px, mid - h / 2, 1.4, h)
         }
-      } else if (p.peaks === null) {
+      } else if (peaks === null) {
         ctx.fillStyle = 'rgba(232, 234, 237, 0.14)'
         ctx.fillRect(a, wy + WAVE_H / 2, w, 1)
       }
@@ -288,6 +304,54 @@ export default function Timeline (props) {
         ctx.fillRect(a + HANDLE / 2 - 1, top + CLIP_H / 2 - 9, 2, 18)
         ctx.fillRect(b - HANDLE / 2 - 1, top + CLIP_H / 2 - 9, 2, 18)
       }
+    }
+
+    for (let k = 1; k < rects.length; k++) {
+      const x = rects[k].x0
+      if (x < -10 || x > W + 10) continue
+      if (rects[k].piece.id === p.selectedId || rects[k - 1].piece.id === p.selectedId) continue
+      const has = Boolean(rects[k].piece.transition)
+      const sel = p.selectedJoin === k
+      const y = top + CLIP_H / 2
+      ctx.save()
+      ctx.beginPath()
+      ctx.roundRect(x - 8, y - 8, 16, 16, 4)
+      ctx.fillStyle = sel ? '#8ab4f8' : has ? '#ffffff' : 'rgba(20, 22, 26, 0.92)'
+      ctx.fill()
+      ctx.strokeStyle = sel || has ? '#ffffff' : 'rgba(255, 255, 255, 0.55)'
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+      // A bow-tie mark: two triangles meeting, the usual sign for a transition.
+      ctx.fillStyle = sel || has ? '#16181c' : 'rgba(255, 255, 255, 0.8)'
+      ctx.beginPath()
+      ctx.moveTo(x - 4, y - 4); ctx.lineTo(x, y); ctx.lineTo(x - 4, y + 4); ctx.closePath()
+      ctx.moveTo(x + 4, y - 4); ctx.lineTo(x, y); ctx.lineTo(x + 4, y + 4); ctx.closePath()
+      ctx.fill()
+      ctx.restore()
+    }
+
+    const d = drag.current
+    if (d && d.mode === 'reorder') {
+      const others = rects.filter((r) => r.piece.id !== d.id)
+      const lineX = d.to >= others.length ? (others.length ? others[others.length - 1].x1 : cx) : others[d.to].x0
+      ctx.fillStyle = '#8ab4f8'
+      ctx.fillRect(lineX - 1.5, top - 4, 3, CLIP_H + 8)
+      const me = rects.find((r) => r.piece.id === d.id)
+      const w = Math.min(140, Math.max(40, me ? me.x1 - me.x0 : 60))
+      ctx.save()
+      ctx.globalAlpha = 0.85
+      ctx.fillStyle = '#2b3442'
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.roundRect(d.x - w / 2, top - 6, w, CLIP_H, 6)
+      ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = '#fff'
+      ctx.font = FONT
+      ctx.textAlign = 'center'
+      ctx.fillText(me ? lengthOf(me.piece).toFixed(1) + 's' : '', d.x, top - 6 + CLIP_H / 2)
+      ctx.restore()
     }
 
     // The song lane.
@@ -405,6 +469,10 @@ export default function Timeline (props) {
       p.onTrim({ id: hit.piece.id, edge: hit.edge, to: hit.piece[hit.edge], phase: 'start' })
       return
     }
+    if (hit.zone === 'move') {
+      drag.current = { mode: 'pendingmove', id: hit.piece.id, x0: e.clientX, x, hit: { zone: 'clip', piece: hit.piece } }
+      return
+    }
     if (hit.zone === 'text') {
       drag.current = { mode: 'text', id: hit.item.id, edge: hit.edge, start: hit.item.start, end: hit.item.end, x0: e.clientX, moved: false }
       p.onText({ id: hit.item.id, phase: 'start' })
@@ -425,9 +493,10 @@ export default function Timeline (props) {
       const { x, y } = pos(e)
       const hit = hitTest(x, y)
       e.currentTarget.style.cursor = hit.zone === 'handle' ? 'ew-resize'
-        : hit.zone === 'ruler' || hit.zone === 'addmusic' || hit.zone === 'addtext' ? 'pointer'
+        : hit.zone === 'ruler' || hit.zone === 'addmusic' || hit.zone === 'addtext' || hit.zone === 'join' ? 'pointer'
           : hit.zone === 'music' ? 'move'
-            : hit.zone === 'text' ? (hit.edge === 'move' ? 'move' : 'ew-resize') : 'grab'
+            : hit.zone === 'text' ? (hit.edge === 'move' ? 'move' : 'ew-resize')
+              : hit.zone === 'move' ? 'grab' : 'grab'
       return
     }
     const dx = e.clientX - d.x0
@@ -444,6 +513,14 @@ export default function Timeline (props) {
     // Dragging the song right makes it start later, so less of it has played.
     if (d.mode === 'music') {
       p.onMusic({ offset: d.from - dx / p.pps, phase: 'move' })
+      return
+    }
+    if (d.mode === 'pendingmove' && Math.abs(dx) > DRAG_SLOP) d.mode = 'reorder'
+    if (d.mode === 'reorder') {
+      d.x = pos(e).x
+      d.to = dropIndex(d.id, d.x)
+      e.currentTarget.style.cursor = 'grabbing'
+      redraw((n) => n + 1)
       return
     }
     if (d.mode === 'pending' && Math.abs(dx) > DRAG_SLOP) {
@@ -472,8 +549,16 @@ export default function Timeline (props) {
       return
     }
     e.currentTarget.style.cursor = 'grab'
+    if (d.mode === 'reorder') {
+      redraw((n) => n + 1)
+      if (!cancelled) p.onReorder?.(d.id, d.to)
+      return
+    }
+    if (d.mode === 'pendingmove') d.mode = 'pending'
     if (d.mode !== 'pending' || cancelled) return
-    if (d.hit.zone === 'addtext') {
+    if (d.hit.zone === 'join') {
+      p.onJoin?.(d.hit.k)
+    } else if (d.hit.zone === 'addtext') {
       p.onAddText?.()
     } else if (d.hit.zone === 'addmusic') {
       p.onAddMusic?.()

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ASPECTS } from './frame.js'
 import { drawText, layoutText } from './text.js'
+import { videoUrl } from '../api.js'
 
 export { ASPECTS }
 const MIN_CROP = 0.06
@@ -12,17 +13,36 @@ const contain = (aspect, box) => {
 }
 
 /**
+ * How a layer looks part way (m, 0 to 1) through a transition, as near as CSS
+ * gets to what the export draws. `side` is 'out' or 'in'.
+ */
+function effect (type, m, side) {
+  const out = side === 'out'
+  switch (type) {
+    case 'black': return { opacity: out ? Math.max(0, 1 - 2 * m) : Math.max(0, 2 * m - 1) }
+    case 'white': return { opacity: out ? (m < 0.5 ? 1 : 0) : (m >= 0.5 ? 1 : 0) }
+    case 'slide': return { transform: `translateX(${out ? -m * 100 : (1 - m) * 100}%)` }
+    case 'wipe': return out ? {} : { clipPath: `inset(0 0 0 ${(1 - m) * 100}%)` }
+    case 'zoom': return out ? { transform: `scale(${1 + m * 0.6})`, opacity: 1 - m } : { opacity: m }
+    case 'circle': return out ? {} : { clipPath: `circle(${m * 75}% at 50% 50%)` }
+    case 'blur': return out ? { filter: `blur(${m * 12}px)`, opacity: 1 - m } : { filter: `blur(${(1 - m) * 12}px)`, opacity: m }
+    default: return out ? {} : { opacity: m }
+  }
+}
+
+/**
  * The picture as the export will frame it.
  *
- * The frame has the canvas shape. Inside it, a window the shape of the
- * cropped video shows just the cropped part, by sizing the videos up and
- * sliding them so the crop sits in the window. Around the window is either
- * black or a blurred copy of the picture, drawn into a tiny canvas that the
- * browser stretches and blurs, which costs next to nothing per frame.
+ * The frame has the canvas shape. Each picture source sits in its own layer:
+ * the main clip in a window the shape of its crop, sized up and slid so only
+ * the crop shows; another clip, or a still, fitted inside the frame. Around
+ * them is either black or a blurred copy of what is showing, drawn into a
+ * tiny canvas that the browser stretches and blurs, which costs next to
+ * nothing per frame. During a transition two layers show at once, blended.
  *
  * In crop mode the whole uncropped frame shows, with the crop box over it.
  */
-export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, src, stillUrl, onClick, loading, texts, selectedTextId, onSelectText, onMoveText }) {
+export default function Stage ({ info, clips, mainId, look, cropping, cropRatio, onCrop, pb, onClick, loading, texts, selectedTextId, onSelectText, onMoveText }) {
   const boxRef = useRef(null)
   const bgRef = useRef(null)
   const dragRef = useRef(null)
@@ -43,33 +63,61 @@ export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, sr
   const canvasAspect = !cropping && ASPECTS[look.canvas]
   const aspect = canvasAspect || vw / vh
   const frame = contain(aspect, box)
-  const win = contain(vw / vh, frame)
-  const s = vw ? win.w / vw : 0
-  const padded = Boolean(canvasAspect) && Math.abs(vw / vh - canvasAspect) > 0.01
   const blur = look.background !== 'black'
-  const videoStyle = {
-    width: W0 * s,
-    height: H0 * s,
-    left: -(crop ? crop.x : 0) * W0 * s,
-    top: -(crop ? crop.y : 0) * H0 * s
+
+  /** Where a source sits in the frame, and how its video is placed inside. */
+  function placeFor (srcId) {
+    if (!srcId || srcId === mainId) {
+      const win = contain(vw / vh, frame)
+      const s = vw ? win.w / vw : 0
+      return {
+        rect: win,
+        inner: { width: W0 * s, height: H0 * s, left: -(crop ? crop.x : 0) * W0 * s, top: -(crop ? crop.y : 0) * H0 * s },
+        crop
+      }
+    }
+    const ci = clips?.[srcId]
+    const rect = contain(ci && ci.width ? ci.width / ci.height : 16 / 9, frame)
+    return { rect, inner: { width: rect.w, height: rect.h, left: 0, top: 0 }, crop: null }
   }
 
-  // The blurred fill behind a video that does not reach the frame's edges.
-  const drawBlur = padded && blur && !pb.still
+  /** Visibility and transition styling for one layer. */
+  function layerLook (name) {
+    const mx = pb.mix
+    if (!mx) return name === pb.layer ? { opacity: 1, zIndex: 2 } : { opacity: 0, zIndex: 1 }
+    if (name === mx.outLayer) return { opacity: 1, zIndex: 2, ...effect(mx.type, mx.m, 'out') }
+    if (name === mx.inLayer) return { opacity: 1, zIndex: 3, ...effect(mx.type, mx.m, 'in') }
+    return { opacity: 0, zIndex: 1 }
+  }
+
+  const boxStyle = (rect) => ({
+    width: rect.w,
+    height: rect.h,
+    left: (frame.w - rect.w) / 2,
+    top: (frame.h - rect.h) / 2
+  })
+
+  // The blurred fill copies whichever video is most on screen.
+  const onScreen = pb.mix ? (pb.mix.m >= 0.5 ? pb.mix.inLayer : pb.mix.outLayer) : pb.layer
+  const bgVideo = onScreen[0] === 'v' ? Number(onScreen[1]) : null
+  const bgStill = onScreen === 'still2' ? pb.still2 : onScreen === 'still' ? pb.still : null
+  const bgCrop = bgVideo !== null ? placeFor(pb.srcs[bgVideo]).crop : null
   useEffect(() => {
-    if (!drawBlur) return
+    if (!blur || bgVideo === null) return
     const c = bgRef.current
+    if (!c) return
     const ctx = c.getContext('2d')
     c.width = 48
     c.height = Math.max(8, Math.round(48 / aspect))
     let raf = 0
     function draw () {
-      const v = (pb.front === 0 ? pb.aRef : pb.bRef).current
+      const v = (bgVideo === 0 ? pb.aRef : pb.bRef).current
       if (v && v.readyState >= 2 && v.videoWidth) {
-        const sx = (crop ? crop.x : 0) * v.videoWidth
-        const sy = (crop ? crop.y : 0) * v.videoHeight
-        const sw = (crop ? crop.w : 1) * v.videoWidth
-        const sh = (crop ? crop.h : 1) * v.videoHeight
+        const k0 = bgCrop
+        const sx = (k0 ? k0.x : 0) * v.videoWidth
+        const sy = (k0 ? k0.y : 0) * v.videoHeight
+        const sw = (k0 ? k0.w : 1) * v.videoWidth
+        const sh = (k0 ? k0.h : 1) * v.videoHeight
         const k = Math.max(c.width / sw, c.height / sh)
         ctx.drawImage(v, sx, sy, sw, sh, (c.width - sw * k) / 2, (c.height - sh * k) / 2, sw * k, sh * k)
       }
@@ -77,7 +125,7 @@ export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, sr
     }
     draw()
     return () => cancelAnimationFrame(raf)
-  }, [drawBlur, aspect, crop?.x, crop?.y, crop?.w, crop?.h, pb.front, pb.aRef, pb.bRef])
+  }, [blur, bgVideo, aspect, bgCrop?.x, bgCrop?.y, bgCrop?.w, bgCrop?.h, pb.aRef, pb.bRef])
 
   /* ------------------------------------------------------ the crop box */
 
@@ -132,27 +180,32 @@ export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, sr
   }
 
   const handles = rn ? ['nw', 'ne', 'sw', 'se'] : ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+  const whiteFlash = pb.mix && pb.mix.type === 'white' ? 1 - Math.abs(2 * pb.mix.m - 1) : 0
 
   return (
     <div className="ed__stage" ref={boxRef} onClick={cropping ? undefined : onClick}>
-      <div className="ed__frame" style={{ width: frame.w, height: frame.h }}>
-        {drawBlur ? <canvas ref={bgRef} className="ed__bg" /> : null}
-        {pb.still && blur ? <img className="ed__bg ed__bg--img" src={stillUrl} alt="" /> : null}
-        <div className="ed__window" style={{ width: win.w, height: win.h }}>
-          {[pb.aRef, pb.bRef].map((ref, k) => (
-            <video
-              key={k}
-              ref={ref}
-              className={'ed__video' + (pb.front === k && !pb.still ? ' is-front' : '')}
-              style={videoStyle}
-              src={src}
-              preload="auto"
-              playsInline
-              muted
-            />
-          ))}
-        </div>
-        {pb.still ? <img className="ed__still" src={stillUrl} alt="" /> : null}
+      <div className="ed__frame" style={{ width: frame.w, height: frame.h }} data-layer={pb.layer} data-mix={pb.mix ? pb.mix.type + ':' + pb.mix.m.toFixed(2) : ''}>
+        {blur && bgVideo !== null ? <canvas ref={bgRef} className="ed__bg" /> : null}
+        {blur && bgStill ? <img className="ed__bg ed__bg--img" src={videoUrl(bgStill)} alt="" /> : null}
+        {[pb.aRef, pb.bRef].map((ref, k) => {
+          const place = placeFor(pb.srcs[k])
+          return (
+            <div key={k} className="ed__layer" style={{ ...boxStyle(place.rect), ...layerLook('v' + k) }}>
+              <video ref={ref} className="ed__video" style={place.inner} preload="auto" playsInline muted />
+            </div>
+          )
+        })}
+        {pb.still ? (
+          <div className="ed__layer" style={{ ...boxStyle(frame), left: 0, top: 0, ...layerLook('still') }}>
+            <img className="ed__still" src={videoUrl(pb.still)} alt="" />
+          </div>
+        ) : null}
+        {pb.still2 ? (
+          <div className="ed__layer" style={{ ...boxStyle(frame), left: 0, top: 0, ...layerLook('still2') }}>
+            <img className="ed__still" src={videoUrl(pb.still2)} alt="" />
+          </div>
+        ) : null}
+        {whiteFlash > 0 ? <div className="ed__flash" style={{ opacity: whiteFlash }} /> : null}
         {!cropping && texts && texts.length ? (
           <TextLayer
             texts={texts}

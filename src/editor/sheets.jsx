@@ -5,7 +5,8 @@ import { drawText, textFrames } from './text.js'
 import { Choice } from './panels.jsx'
 import { Captions, Check, Download, Music } from '../icons.jsx'
 import {
-  captionsStatus, exportCuts, installCaptions, listMedia, pullAudio, transcribe, uploadMedia, videoUrl
+  captionsStatus, exportJob, exportStart, exportStop, getState, installCaptions, listBucket, listMedia, pullAudio,
+  thumbUrl, transcribe, uploadMedia, videoUrl
 } from '../api.js'
 
 export function useEscape (onClose, busy) {
@@ -120,6 +121,7 @@ export function Written ({ result }) {
         {list.map((w) => (
           <li key={w.name}>
             {w.name}
+            {w.subtitleFile ? <em className="written__early">the captions as a subtitle file</em> : null}
             {/* A fast cut can only start on a keyframe; say so rather than
                 leave the extra seconds as a surprise. */}
             {w.startedAt !== undefined && w.asked - w.startedAt > 0.01 ? (
@@ -171,53 +173,96 @@ export async function textPictures (texts, info, look, total, onProgress) {
   return out
 }
 
+const QUALITIES = {
+  high: ['High', 'Best picture, bigger file. Takes longer.'],
+  standard: ['Standard', 'Good picture, sensible size.'],
+  small: ['Small', 'At most 1280 pixels tall, for sending on.']
+}
+
+const segmentsOf = (pieces, mainId) => pieces.map((p) => {
+  const t = p.transition ? { transition: p.transition } : {}
+  if (isImage(p)) return { kind: 'image', image: p.image, length: p.end - p.start, ...t }
+  return { ...(p.src && p.src !== mainId ? { src: p.src } : {}), start: p.start, end: p.end, ...t }
+})
+
 export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, music, look, texts, info, mode, onMode, onClose }) {
   const [fast, setFast] = useState(false)
+  const [format, setFormat] = useState('mp4')
+  const [quality, setQuality] = useState('standard')
+  const [srt, setSrt] = useState(false)
   const [busy, setBusy] = useState(false)
   const [stage, setStage] = useState(null)
+  const [progress, setProgress] = useState(0)
+  const [jobId, setJobId] = useState(null)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false }, [])
   useEscape(onClose, busy)
 
-  // A stream copy cannot crop, fill, add pictures or mix in a song.
-  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some(isImage) && !(texts || []).length
+  const captions = (texts || []).filter((x) => x.caption)
+  const gif = format === 'gif'
+  const tooLongForGif = total > 60
+  // A stream copy cannot crop, fill, add pictures or text, blend or mix in a song.
+  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some((p) => isImage(p) || p.transition || (p.src && p.src !== video.id)) &&
+    !(texts || []).length && !look.fadeIn && !look.fadeOut && quality === 'standard' && !gif
 
   async function go () {
     setBusy(true)
     setError(null)
     setResult(null)
+    setProgress(0)
     try {
       const overlays = texts && texts.length
-        ? await textPictures(texts, info, look, total, (n, of) => setStage(`Preparing text ${n} of ${of}…`))
+        ? await textPictures(texts, info, look, total, (n, of) => { setStage(`Preparing text ${n} of ${of}`); setProgress(n / of) })
         : []
-      setStage(null)
-      setResult(await exportCuts({
+      setStage('Starting')
+      setProgress(0)
+      const { job } = await exportStart({
         overlays,
         id: video.id,
-        segments: pieces.map((p) => (isImage(p)
-          ? { kind: 'image', image: p.image, length: p.end - p.start }
-          : { start: p.start, end: p.end })),
-        join: mode === 'join',
+        segments: segmentsOf(pieces, video.id),
+        join: mode === 'join' || gif,
         stripAudio: soundOff,
         mode: mode === 'parts' && fast && plain ? 'fast' : 'accurate',
         music: music ? { id: music.id, offset: music.offset, volume: music.volume } : null,
-        look
-      }))
+        look,
+        quality,
+        format,
+        srt: srt && !gif && captions.length > 0,
+        captions: captions.map((c) => ({ start: c.start, end: c.end, text: c.text }))
+      })
+      setJobId(job)
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 350))
+        const j = await exportJob(job)
+        if (!alive.current) return
+        setStage(j.stage)
+        setProgress(j.progress)
+        if (j.state === 'done') { setResult(j.result); break }
+        if (j.state !== 'running') throw new Error(j.error || 'The export did not finish')
+      }
     } catch (err) {
-      setError(err.message)
+      if (alive.current) setError(err.message)
     } finally {
-      setBusy(false)
-      setStage(null)
+      if (alive.current) {
+        setBusy(false)
+        setStage(null)
+        setJobId(null)
+      }
     }
   }
 
   const n = pieces.length
+  const cuts = pieces.filter((p) => p.transition).length
   const extras = [
     look.crop ? 'cropped' : null,
     look.canvas !== 'original' ? `${look.canvas} with a ${look.background === 'black' ? 'black' : 'blurred'} fill` : null,
     music ? `♪ ${music.name}` : null,
-    texts && texts.some((x) => x.caption) ? 'captions' : null,
-    texts && texts.some((x) => !x.caption) ? `${texts.filter((x) => !x.caption).length} text${texts.filter((x) => !x.caption).length === 1 ? '' : 's'}` : null
+    captions.length ? 'captions' : null,
+    texts && texts.some((x) => !x.caption) ? `${texts.filter((x) => !x.caption).length} text${texts.filter((x) => !x.caption).length === 1 ? '' : 's'}` : null,
+    cuts ? `${cuts} transition${cuts === 1 ? '' : 's'}` : null,
+    look.fadeIn || look.fadeOut ? 'fades' : null
   ].filter(Boolean)
 
   return (
@@ -227,9 +272,9 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
 
         <div className="choices" role="radiogroup" aria-label="What to export">
           <button
-            className={'choice' + (mode === 'join' ? ' is-on' : '')}
+            className={'choice' + (mode === 'join' || gif ? ' is-on' : '')}
             role="radio"
-            aria-checked={mode === 'join'}
+            aria-checked={mode === 'join' || gif}
             onClick={() => onMode('join')}
             disabled={busy}
           >
@@ -237,31 +282,67 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
             <span>{n === 1 ? 'The clip as trimmed' : `All ${n} pieces joined in order`}, {formatClock(total, true)} long</span>
           </button>
           <button
-            className={'choice' + (mode === 'parts' ? ' is-on' : '')}
+            className={'choice' + (mode === 'parts' && !gif ? ' is-on' : '')}
             role="radio"
-            aria-checked={mode === 'parts'}
-            onClick={() => onMode('parts')}
+            aria-checked={mode === 'parts' && !gif}
+            onClick={() => { onMode('parts'); setFormat('mp4') }}
             disabled={busy}
           >
             <strong>Separate parts</strong>
-            <span>{n} file{n === 1 ? '' : 's'}, one for each piece</span>
+            <span>{n} file{n === 1 ? '' : 's'}, one for each piece{cuts ? '; transitions only apply to one video' : ''}</span>
           </button>
         </div>
 
+        <div className="ed__textrow sheet__row">
+          <span className="ed__panel-label ed__nogrow">Format</span>
+          <Choice on={!gif} onClick={() => setFormat('mp4')} disabled={busy}>Video (MP4)</Choice>
+          <Choice
+            on={gif}
+            onClick={() => { setFormat('gif'); onMode('join') }}
+            disabled={busy || tooLongForGif}
+            title={tooLongForGif ? 'A GIF can be at most a minute long' : 'A small looping picture with no sound'}
+          >
+            GIF
+          </Choice>
+          {!gif ? (
+            <>
+              <span className="ed__panel-sep" />
+              <span className="ed__panel-label ed__nogrow">Quality</span>
+              {Object.entries(QUALITIES).map(([k, [label]]) => (
+                <Choice key={k} on={quality === k} onClick={() => setQuality(k)} disabled={busy}>{label}</Choice>
+              ))}
+            </>
+          ) : null}
+        </div>
+        <p className="sheet__body sheet__extras">
+          {gif ? 'A looping picture, 480 pixels wide at most, 12 frames a second, no sound.' : QUALITIES[quality][1]}
+        </p>
+
         {extras.length ? <p className="sheet__body sheet__extras">With: {extras.join(' · ')}</p> : null}
-        {texts && texts.some((x) => x.caption) ? (
+        {captions.length ? (
           <p className="sheet__body sheet__extras">
             Captions go out exactly as they are now. If a word is wrong, close this and click the caption to fix it first.
           </p>
         ) : null}
 
-        <label className="opt">
-          <input type="checkbox" checked={soundOff} onChange={(e) => onSoundOff(e.target.checked)} disabled={busy || !hasAudio} />
-          <span>
-            Remove the clip's own sound
-            <em>{!hasAudio ? 'This clip has no sound anyway.' : music ? 'Only the added song will play.' : 'A silent video, so you can add your own audio.'}</em>
-          </span>
-        </label>
+        {!gif ? (
+          <label className="opt">
+            <input type="checkbox" checked={soundOff} onChange={(e) => onSoundOff(e.target.checked)} disabled={busy || !hasAudio} />
+            <span>
+              Remove the clip's own sound
+              <em>{!hasAudio ? 'This clip has no sound anyway.' : music ? 'Only the added song will play.' : 'A silent video, so you can add your own audio.'}</em>
+            </span>
+          </label>
+        ) : null}
+        {captions.length && !gif ? (
+          <label className="opt">
+            <input type="checkbox" checked={srt} onChange={(e) => setSrt(e.target.checked)} disabled={busy} />
+            <span>
+              Also save the captions as a subtitle file
+              <em>An .srt file beside the video, for sites and players that show their own subtitles.</em>
+            </span>
+          </label>
+        ) : null}
         {mode === 'parts' && plain ? (
           <label className="opt">
             <input type="checkbox" checked={fast} onChange={(e) => setFast(e.target.checked)} disabled={busy} />
@@ -276,15 +357,96 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
           Saved in the <strong>edits</strong> folder inside “{bucket.name}”. The original is not changed.
         </p>
 
+        {busy ? (
+          <div className="progress">
+            <span className="progress__label">{stage || 'Exporting'}… {Math.round(progress * 100)}%</span>
+            <span className="progress__bar"><span style={{ width: Math.max(2, progress * 100) + '%' }} /></span>
+          </div>
+        ) : null}
         {error ? <p className="sheet__error">{error}</p> : null}
         {result ? <Written result={result} /> : null}
 
         <div className="sheet__actions">
-          <button className="pill" onClick={onClose} disabled={busy}>{result ? 'Done' : 'Cancel'}</button>
+          {busy ? (
+            <button className="pill pill--danger" onClick={() => jobId && exportStop(jobId)} disabled={!jobId}>Stop</button>
+          ) : (
+            <button className="pill" onClick={onClose}>{result ? 'Done' : 'Cancel'}</button>
+          )}
           <button className="pill pill--solid" onClick={go} disabled={busy}>
             <Download size={16} />
-            {busy ? (stage || 'Exporting…') : result ? 'Export again' : mode === 'join' ? 'Export video' : `Export ${n} file${n === 1 ? '' : 's'}`}
+            {busy ? 'Exporting…' : result ? 'Export again' : gif ? 'Export GIF' : mode === 'join' ? 'Export video' : `Export ${n} file${n === 1 ? '' : 's'}`}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Picks another clip to add to the edit, from this bucket or any other. It
+ * goes in after the selected piece, or at the end, whole; trim it like any
+ * other piece.
+ */
+export function ClipSheet ({ bucket, mainId, onPick, onClose }) {
+  const [buckets, setBuckets] = useState(null)
+  const [from, setFrom] = useState(bucket.id)
+  const [videos, setVideos] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  useEscape(onClose, busy)
+
+  useEffect(() => {
+    getState().then((s) => setBuckets(s.buckets)).catch(() => setBuckets([bucket]))
+  }, [bucket])
+
+  useEffect(() => {
+    let cancelled = false
+    setVideos(null)
+    listBucket(from)
+      .then((d) => { if (!cancelled) setVideos(d.videos.filter((v) => v.playable)) })
+      .catch((err) => { if (!cancelled) { setVideos([]); setError(err.message) } })
+    return () => { cancelled = true }
+  }, [from])
+
+  async function pick (v) {
+    setBusy(true)
+    setError(null)
+    try {
+      await onPick(v)
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onClose()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Add a clip</h2>
+        <p className="sheet__body">
+          It joins the edit after the selected piece, or at the end. Trim it, split it and move it like any other piece.
+        </p>
+        {buckets && buckets.length > 1 ? (
+          <label className="ed__secs">
+            From
+            <select className="ed__select" value={from} onChange={(e) => setFrom(e.target.value)} disabled={busy}>
+              {buckets.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+        ) : null}
+        <div className="cliplist">
+          {videos === null ? <p className="sheet__body">Looking…</p> : null}
+          {videos && !videos.length ? <p className="sheet__body">No clips that can be previewed here.</p> : null}
+          {(videos || []).map((v) => (
+            <button key={v.id} className="clipitem" onClick={() => pick(v)} disabled={busy} title={v.name}>
+              <img className="clipitem__thumb" src={thumbUrl(v.id)} alt="" loading="lazy" />
+              <span className="clipitem__name">{v.id === mainId ? 'This clip again: ' : ''}{v.name}</span>
+            </button>
+          ))}
+        </div>
+        {error ? <p className="sheet__error">{error}</p> : null}
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={busy}>{busy ? 'Adding…' : 'Cancel'}</button>
         </div>
       </div>
     </div>
@@ -398,7 +560,7 @@ export function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
       const payload = {
         id: video.id,
         model,
-        segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { start: p.start, end: p.end }))
+        segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { ...(p.src && p.src !== video.id ? { src: p.src } : {}), start: p.start, end: p.end }))
       }
       for (;;) {
         const r = await transcribe(payload)

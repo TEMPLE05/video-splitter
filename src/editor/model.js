@@ -100,6 +100,8 @@ export function removePiece (pieces, id) {
  * clip, as in CapCut, as long as the piece stays at least `min` long.
  */
 export function trimPiece (pieces, id, edge, to, duration, min) {
+  // `duration` may be a function giving the length of each piece's own clip.
+  const lenOf = (p) => (typeof duration === 'function' ? duration(p) : duration)
   return pieces.map((p) => {
     if (p.id !== id) return p
     // A still has no source to run out of, so either edge just sets its length.
@@ -108,7 +110,7 @@ export function trimPiece (pieces, id, edge, to, duration, min) {
       return { ...p, end: Math.max(Math.min(to, p.start + MAX_STILL), p.start + min) }
     }
     if (edge === 'start') return { ...p, start: Math.min(Math.max(to, 0), p.end - min) }
-    return { ...p, end: Math.max(Math.min(to, duration), p.start + min) }
+    return { ...p, end: Math.max(Math.min(to, lenOf(p)), p.start + min) }
   })
 }
 
@@ -128,10 +130,45 @@ export function splitEvenly (pieces, n, duration, min) {
   }))
 }
 
-/** True when piece `i` carries straight on from piece `i - 1` in the source. */
+/**
+ * True when piece `i` carries straight on from piece `i - 1` in the same clip,
+ * with a plain cut, so playback can simply keep going.
+ */
 export function continuesFrom (pieces, i, frame) {
-  return i > 0 && !isImage(pieces[i]) && !isImage(pieces[i - 1]) &&
+  return i > 0 && !isImage(pieces[i]) && !isImage(pieces[i - 1]) && !pieces[i].transition &&
+    (pieces[i].src || null) === (pieces[i - 1].src || null) &&
     Math.abs(pieces[i].start - pieces[i - 1].end) < frame / 2
+}
+
+export const TRANSITIONS = {
+  fade: 'Fade', black: 'Black', white: 'White', slide: 'Slide', wipe: 'Wipe', zoom: 'Zoom', circle: 'Circle', blur: 'Blur'
+}
+
+/**
+ * Where each transition plays on the timeline. Must match the server, which
+ * renders them: a transition borrows footage from beyond the cut, half from
+ * each side, or all from one side when the other has none (a clip's very
+ * first frame, say). The edit keeps its length either way.
+ * `durationOf(piece)` is the length of the clip a piece comes from.
+ */
+export function transitionWindows (pieces, durationOf) {
+  const offs = offsets(pieces)
+  const room = (q, side) => (isImage(q) ? Infinity : side === 'after' ? Math.max(0, durationOf(q) - q.end) : Math.max(0, q.start))
+  return pieces.map((p, k) => {
+    const t = p.transition
+    if (k === 0 || !t || !TRANSITIONS[t.type]) return null
+    const A = pieces[k - 1]
+    const lenA = lengthOf(A)
+    const lenB = lengthOf(p)
+    const d = Math.min(Number(t.d) || 0, 4, lenA / 2 + lenB / 2)
+    const roomA = Math.min(room(A, 'after'), lenA / 2)
+    const roomB = Math.min(room(p, 'before'), lenB / 2)
+    let eB = Math.min(d / 2, roomB)
+    const eA = Math.min(d - eB, roomA)
+    eB = Math.min(d - eA, roomB)
+    if (!(eA + eB >= 0.08)) return null
+    return { type: t.type, eA, eB, from: offs[k] - eB, to: offs[k] + eA }
+  })
 }
 
 export function formatClock (seconds, withFraction = false) {

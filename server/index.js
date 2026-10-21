@@ -1359,7 +1359,7 @@ function cleanCrop (crop) {
  * the long side is capped at 1920 so a landscape clip on a 9:16 canvas does
  * not become a 3,400 pixel tall file.
  */
-function frameSize (meta, crop, canvas) {
+function frameSize (meta, crop, canvas, cap = 1920) {
   const vw = meta.width * (crop ? crop.w : 1)
   const vh = meta.height * (crop ? crop.h : 1)
   const A = ASPECTS[canvas]
@@ -1367,7 +1367,7 @@ function frameSize (meta, crop, canvas) {
   let H = vh
   if (A && vw / vh > A + 0.01) H = vw / A
   else if (A && vw / vh < A - 0.01) W = vh * A
-  const scale = Math.min(1, 1920 / Math.max(W, H))
+  const scale = Math.min(1, cap / Math.max(W, H))
   return { W: even(W * scale), H: even(H * scale), padded: Boolean(A) && Math.abs(vw / vh - A) > 0.01 }
 }
 
@@ -1391,52 +1391,152 @@ function fitInto (input, output, W, H, background, tag) {
 
 const AFMT = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo'
 
+// Transitions offered by the editor, as FFmpeg's xfade names them.
+const TRANSITIONS = { fade: 'fade', black: 'fadeblack', white: 'fadewhite', slide: 'slideleft', wipe: 'wipeleft', zoom: 'zoomin', circle: 'circleopen', blur: 'hblur' }
+
+// Encoder settings per quality, and the longest side each allows.
+const QUALITY = {
+  high: { crf: '18', preset: 'medium', audio: '256k', cap: 1920 },
+  standard: { crf: '20', preset: 'veryfast', audio: '192k', cap: 1920 },
+  small: { crf: '27', preset: 'veryfast', audio: '128k', cap: 1280 }
+}
+
+/**
+ * Runs FFmpeg for an export, reporting how far it has got and letting the
+ * export be stopped. Without a job it is the plain runner.
+ */
+function runTracked (args, job, outLen) {
+  if (!job) return run('ffmpeg', args)
+  return new Promise((resolve) => {
+    if (job.cancelled) { resolve({ code: -2, stdout: '', stderr: 'stopped' }); return }
+    const child = spawn('ffmpeg', ['-progress', 'pipe:1', '-nostats', ...args], { windowsHide: true })
+    job.child = child
+    let stderr = ''
+    let buf = ''
+    child.stdout.on('data', (d) => {
+      buf += d
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const m = /^out_time_us=(\d+)/.exec(buf.slice(0, i).trim())
+        buf = buf.slice(i + 1)
+        if (m) job.done = job.base + Math.min(outLen, Number(m[1]) / 1e6)
+      }
+    })
+    child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-8000) })
+    child.on('error', (err) => { job.child = null; resolve({ code: -1, stdout: '', stderr: err.message }) })
+    child.on('close', (code) => { job.child = null; resolve({ code, stdout: '', stderr }) })
+  })
+}
+
 /**
  * Renders pieces into one file, re-encoded. Used for the finished video (all
  * pieces) and for each separate part (one piece each), so both get the same
- * crop, canvas, soundtrack and subtitles.
+ * crop, canvas, soundtrack, text, transitions and fades.
  *
- * Video pieces are seeked inputs of the clip; image pieces are a still looped
- * for their length. Every piece is brought to the same size, rate and sound
- * format, joined with concat, and the new soundtrack, if any, is laid under
- * the result starting at the right moment of the song.
+ * Video pieces are seeked inputs of their clip; picture pieces are a still
+ * looped for their length. Every piece is brought to the same size, rate and
+ * sound format. Runs of pieces with plain cuts are joined with concat; where a
+ * transition is asked for, the two sides overlap with xfade. The overlap uses
+ * a little footage from just beyond each cut, half a transition each side, so
+ * the edit keeps exactly its length and everything timed to it (song, text,
+ * captions) stays where it was put.
  */
-async function render ({ file, meta, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps, overlays, overlayBlank }) {
-  const { W, H, padded } = frameSize(meta, crop, canvas)
+async function render ({ main, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
+  const meta = main.meta
+  const Q = QUALITY[quality] || QUALITY.standard
+  const { W, H, padded } = frameSize(meta, crop, canvas, Q.cap)
   const fps = meta.fps.toFixed(3)
   const total = pieces.reduce((s, p) => s + pieceLength(p), 0)
   const args = ['-hide_banner', '-loglevel', 'error', '-y']
   const graph = []
-  const pairs = []
+
+  // How much each cut's transition borrows from either side.
+  const room = (p, side) => {
+    if (p.kind === 'image') return Infinity
+    return side === 'after' ? Math.max(0, p.meta.duration - p.end) : Math.max(0, p.start)
+  }
+  const ext = pieces.map(() => ({ before: 0, after: 0 }))
+  const joins = pieces.map((p, k) => {
+    if (k === 0 || !p.transition || !TRANSITIONS[p.transition.type]) return null
+    // Half from each side if both have footage to spare; if one side has
+    // none (a clip's very first frame, say), the other covers it all. Any
+    // split keeps the edit's length, since the overlap equals what was added.
+    const d = Math.min(Number(p.transition.d) || 0, 4, pieceLength(pieces[k - 1]) / 2 + pieceLength(p) / 2)
+    const roomA = Math.min(room(pieces[k - 1], 'after'), pieceLength(pieces[k - 1]) / 2)
+    const roomB = Math.min(room(p, 'before'), pieceLength(p) / 2)
+    let eB = Math.min(d / 2, roomB)
+    const eA = Math.min(d - eB, roomA)
+    eB = Math.min(d - eA, roomB)
+    if (!(eA + eB >= 0.08)) return null
+    ext[k - 1].after = eA
+    ext[k].before = eB
+    return { type: TRANSITIONS[p.transition.type], d: eA + eB }
+  })
 
   pieces.forEach((p, i) => {
-    const len = pieceLength(p)
+    const len = pieceLength(p) + ext[i].before + ext[i].after
+    const own = p.file === main.file
     if (p.kind === 'image') {
       args.push('-loop', '1', '-framerate', fps, '-t', String(len), '-i', p.file)
       graph.push(fitInto(`[${i}:v:0]`, `[s${i}]`, W, H, background, i))
     } else {
-      args.push('-ss', String(p.start), '-t', String(len), '-i', file)
-      const cropText = crop
+      args.push('-ss', String(p.start - ext[i].before), '-t', String(len), '-i', p.file)
+      // The crop belongs to the clip it was drawn on; other clips are fitted.
+      const cropText = crop && own
         ? `crop=${even(crop.w * meta.width)}:${even(crop.h * meta.height)}:${Math.round(crop.x * meta.width)}:${Math.round(crop.y * meta.height)},`
         : ''
-      if (!padded) graph.push(`[${i}:v:0]${cropText}scale=${W}:${H},setsar=1[s${i}]`)
+      const fills = !own ? Math.abs(p.meta.width / p.meta.height - W / H) > 0.01 : padded
+      if (!fills) graph.push(`[${i}:v:0]${cropText}scale=${W}:${H},setsar=1[s${i}]`)
       else graph.push(fitInto(`[${i}:v:0]${cropText}`, `[s${i}]`, W, H, background, i))
     }
-    graph.push(`[s${i}]fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS[v${i}]`)
+    graph.push(`[s${i}]fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS,settb=AVTB[v${i}]`)
     if (withOriginal) {
-      graph.push(p.kind === 'image' || !meta.hasAudio
+      graph.push(p.kind === 'image' || !p.meta.hasAudio
         ? `anullsrc=r=48000:cl=stereo,atrim=duration=${len}[a${i}]`
         : `[${i}:a:0]${AFMT},apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
-      pairs.push(`[v${i}][a${i}]`)
-    } else {
-      pairs.push(`[v${i}]`)
     }
   })
-  graph.push(`${pairs.join('')}concat=n=${pieces.length}:v=1:a=${withOriginal ? 1 : 0}[vout]${withOriginal ? '[base]' : ''}`)
+
+  // Runs of plain cuts, each joined with concat; then transitions between runs.
+  const runs = [[0]]
+  for (let k = 1; k < pieces.length; k++) {
+    if (joins[k]) runs.push([k])
+    else runs[runs.length - 1].push(k)
+  }
+  const lenOf = (i) => pieceLength(pieces[i]) + ext[i].before + ext[i].after
+  let v = null
+  let a = null
+  let have = 0
+  runs.forEach((ids, r) => {
+    let rv = `[v${ids[0]}]`
+    let ra = withOriginal ? `[a${ids[0]}]` : null
+    if (ids.length > 1) {
+      const pairs = ids.map((i) => (withOriginal ? `[v${i}][a${i}]` : `[v${i}]`)).join('')
+      graph.push(`${pairs}concat=n=${ids.length}:v=1:a=${withOriginal ? 1 : 0}[rv${r}]${withOriginal ? `[ra${r}]` : ''}`)
+      rv = `[rv${r}]`
+      ra = withOriginal ? `[ra${r}]` : null
+    }
+    const runLen = ids.reduce((s, i) => s + lenOf(i), 0)
+    if (!v) {
+      v = rv; a = ra; have = runLen
+      return
+    }
+    const j = joins[ids[0]]
+    const d = j.d
+    graph.push(`${v}${rv}xfade=transition=${j.type}:duration=${d.toFixed(4)}:offset=${(have - d).toFixed(4)}[x${r}]`)
+    v = `[x${r}]`
+    if (withOriginal) {
+      graph.push(`${a}${ra}acrossfade=d=${d.toFixed(4)}:c1=tri:c2=tri[xa${r}]`)
+      a = `[xa${r}]`
+    }
+    have += runLen - d
+  })
+  graph.push(`${v}null[vout]`)
+  if (withOriginal) graph.push(`${a}anull[base]`)
 
   let audioOut = withOriginal ? '[base]' : null
   let next = pieces.length
-  if (music) {
+  if (music && !gif) {
     // The song's own time at the first moment of this render. Negative means
     // the song has not started yet, so it waits.
     const songAt = at + music.offset
@@ -1489,21 +1589,59 @@ async function render ({ file, meta, pieces, target, withOriginal, music, crop, 
     })
   }
 
-  const subs = await writeSubtitles(tracks, pieces)
+  // Fading in from black and out to black, picture and sound together.
+  const fin = Math.min(Number(fades?.in) || 0, total / 2)
+  const fout = Math.min(Number(fades?.out) || 0, total / 2)
+  if (fin > 0 || fout > 0) {
+    const vf = [fin > 0 ? `fade=t=in:st=0:d=${fin}` : null, fout > 0 ? `fade=t=out:st=${(total - fout).toFixed(4)}:d=${fout}` : null].filter(Boolean).join(',')
+    graph.push(`${videoOut}${vf}[faded]`)
+    videoOut = '[faded]'
+    if (audioOut) {
+      const af = [fin > 0 ? `afade=t=in:st=0:d=${fin}` : null, fout > 0 ? `afade=t=out:st=${(total - fout).toFixed(4)}:d=${fout}` : null].filter(Boolean).join(',')
+      graph.push(`${audioOut}${af}[afaded]`)
+      audioOut = '[afaded]'
+    }
+  }
+
+  if (gif) {
+    // A small looping picture: fewer frames, fewer colours, one palette made
+    // for this clip so it still looks right.
+    const gw = Math.min(480, W)
+    graph.push(`${videoOut}fps=12,scale=${gw}:-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff[pal];[g2][pal]paletteuse=dither=bayer:bayer_scale=4[gif]`)
+    args.push('-filter_complex', graph.join(';'), '-map', '[gif]', '-loop', '0', target)
+    const result = await runTracked(args, job, total)
+    return { ...result, subtitles: 0, width: gw, height: 0 }
+  }
+
+  const subs = await writeSubtitles(tracks, pieces.map((p) => (p.file === main.file ? p : { kind: 'image', length: pieceLength(p) })))
   temps.push(...subs.map((s) => s.file))
   const sub = subtitleArgs(subs, next)
   args.push(...sub.inputs, '-filter_complex', graph.join(';'), '-map', videoOut)
-  if (audioOut) args.push('-map', audioOut, '-c:a', 'aac', '-b:a', '192k')
-  args.push(...sub.outputs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+  if (audioOut) args.push('-map', audioOut, '-c:a', 'aac', '-b:a', Q.audio)
+  args.push(...sub.outputs, '-c:v', 'libx264', '-preset', Q.preset, '-crf', Q.crf, '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart', target)
-  const result = await run('ffmpeg', args)
+  const result = await runTracked(args, job, total)
   return { ...result, subtitles: subs.length, width: W, height: H }
 }
 
-app.post('/api/export', wrap(async (req, res) => {
-  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+/** Captions as a subtitle file, for players and sites that take one. */
+async function writeSrt (target, captions, at, len) {
+  const lines = captions
+    .filter((c) => c.end > at + 0.01 && c.start < at + len - 0.01)
+    .map((c) => ({ a: Math.max(0, c.start - at), b: Math.min(len, c.end - at), text: String(c.text || '').trim() }))
+    .filter((c) => c.text)
+  if (!lines.length) return null
+  const file = await reservePath(target.replace(/\.(mp4|gif)$/i, '') + '.srt')
+  await fsp.writeFile(file, lines.map((l, i) => `${i + 1}\n${srtTime(l.a)} --> ${srtTime(l.b)}\n${l.text}\n`).join('\n'))
+  return path.basename(file)
+}
 
-  const body = req.body || {}
+/**
+ * The whole export, from a request body to finished files. With a job it
+ * reports progress as it goes and can be stopped part way.
+ */
+async function doExport (body, job) {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
   const file = resolveInSource(decodeId(String(body.id)))
   if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
 
@@ -1514,22 +1652,39 @@ app.post('/api/export', wrap(async (req, res) => {
 
   const meta = await probe(file)
   if (!meta.hasVideo) throw httpError(400, 'That file has no picture to cut')
+  const main = { file, meta }
+  const metas = new Map([[file, meta]])
 
   const clean = []
   for (const seg of segments) {
+    const transition = seg && seg.transition && TRANSITIONS[seg.transition.type]
+      ? { type: seg.transition.type, d: Math.min(Math.max(Number(seg.transition.d) || 0.5, 0.1), 4) }
+      : null
     if (seg && seg.kind === 'image') {
       const img = resolveInSource(decodeId(String(seg.image)))
       if (!IMAGE_EXT.has(path.extname(img).toLowerCase()) || !fs.existsSync(img)) throw httpError(404, 'A picture in the edit is no longer there')
       const length = Number(seg.length)
       if (!(length >= 0.1 && length <= 600)) throw httpError(400, 'A picture has to show for between 0.1 and 600 seconds')
-      clean.push({ kind: 'image', file: img, length })
+      clean.push({ kind: 'image', file: img, length, transition })
       continue
     }
+    // A piece can come from another clip in the library.
+    let pfile = file
+    if (seg && seg.src && seg.src !== body.id) {
+      pfile = resolveInSource(decodeId(String(seg.src)))
+      if (!VIDEO_EXT.has(path.extname(pfile).toLowerCase()) || !fs.existsSync(pfile)) throw httpError(404, 'A clip in the edit is no longer there')
+    }
+    if (!metas.has(pfile)) {
+      const m = await probe(pfile)
+      if (!m.hasVideo) throw httpError(400, 'A clip in the edit has no picture')
+      metas.set(pfile, m)
+    }
+    const pm = metas.get(pfile)
     const start = Math.max(0, Number(seg.start) || 0)
-    const end = Math.min(meta.duration || Number(seg.end), Number(seg.end))
+    const end = Math.min(pm.duration || Number(seg.end), Number(seg.end))
     if (!(end > start)) throw httpError(400, 'A segment ends before it starts')
     if (end - start < 0.05) throw httpError(400, 'A segment is too short to export')
-    clean.push({ kind: 'video', start, end })
+    clean.push({ kind: 'video', file: pfile, meta: pm, start, end, transition })
   }
 
   let music = null
@@ -1543,84 +1698,96 @@ app.post('/api/export', wrap(async (req, res) => {
   const crop = cleanCrop(look.crop)
   const canvas = ASPECTS[look.canvas] ? look.canvas : 'original'
   const background = look.background === 'black' ? 'black' : 'blur'
+  const fades = { in: Math.min(Math.max(Number(look.fadeIn) || 0, 0), 5), out: Math.min(Math.max(Number(look.fadeOut) || 0, 0), 5) }
+  const quality = QUALITY[body.quality] ? body.quality : 'standard'
+  const gif = body.format === 'gif'
   const texts = Array.isArray(body.overlays) ? body.overlays : []
+  const captions = Array.isArray(body.captions) ? body.captions : []
   if (texts.length > 30000) throw httpError(400, 'Too much text animation in one export')
-  const plain = !music && !crop && canvas === 'original' && !texts.length && clean.every((p) => p.kind === 'video')
+  const totalLen = clean.reduce((t, p) => t + pieceLength(p), 0)
+  if (gif && !body.join) throw httpError(400, 'A GIF is always one file; choose One video')
+  if (gif && totalLen > 60) throw httpError(400, 'A GIF of more than a minute would be enormous; keep it under 60 seconds')
+
+  const plain = !music && !crop && canvas === 'original' && !texts.length && !fades.in && !fades.out && quality === 'standard' &&
+    clean.every((p) => p.kind === 'video' && p.file === file)
   const fast = body.mode === 'fast' && !body.join && plain
 
   const outDir = path.join(path.dirname(file), 'edits')
   await fsp.mkdir(outDir, { recursive: true })
   const stem = path.basename(file, path.extname(file))
-  const withOriginal = meta.hasAudio && !stripAudio
-  const tracks = await loadSubtitles(meta, file)
+  const withOriginal = !gif && clean.some((p) => p.kind === 'video' && p.meta.hasAudio) && !stripAudio
+  const tracks = gif ? [] : await loadSubtitles(meta, file)
   const temps = []
+  if (job) { job.total = totalLen; job.base = 0; job.done = 0 }
 
   const fail = async (target, stderr, extra = '') => {
     // Never leave a half-written file behind looking like a finished one.
     await fsp.rm(target, { force: true })
+    if (job && job.cancelled) throw httpError(499, 'Export stopped.' + extra)
     throw httpError(500, 'FFmpeg failed: ' + (stderr.trim().split('\n').pop() || 'unknown error') + extra)
   }
   const sizeOf = async (f) => {
     try { return (await fsp.stat(f)).size } catch { return 0 }
   }
-  // Text pictures go to temporary files once; each part takes its own slice.
-  const overlays = []
-  let overlayBlank = null
-  for (const o of texts) {
-    const m = /^data:image\/png;base64,(.+)$/.exec(String(o && o.png))
-    const a = Number(o && o.start)
-    const b = Number(o && o.end)
-    if (!m || !(b > a) || a < 0) throw httpError(400, 'A text in the edit could not be read')
-    const buf = Buffer.from(m[1], 'base64')
-    const size = pngSize(buf)
-    if (!size) throw httpError(400, 'A text in the edit could not be read')
-    if (overlayBlank && (size.w !== overlayBlank.w || size.h !== overlayBlank.h)) throw httpError(400, 'Texts were drawn at different sizes')
-    if (!overlayBlank) overlayBlank = { ...size }
-    const f = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
-    temps.push(f)
-    await fsp.writeFile(f, buf)
-    overlays.push({ a, b, file: f })
-  }
-  overlays.sort((x, y) => x.a - y.a)
-  if (overlayBlank) {
-    overlayBlank.file = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
-    temps.push(overlayBlank.file)
-    const r = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
-      '-i', `color=c=black@0:s=${overlayBlank.w}x${overlayBlank.h},format=rgba`, '-frames:v', '1', overlayBlank.file])
-    if (r.code !== 0) throw httpError(500, 'Could not prepare the text layer')
-  }
-  const slice = (at, len) => overlays
-    .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
-    .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
-
-  const common = { file, meta, withOriginal, music, crop, canvas, background, tracks, temps, overlayBlank }
 
   try {
+    // Text pictures go to temporary files once; each part takes its own slice.
+    const overlays = []
+    let overlayBlank = null
+    if (job) job.stage = 'Preparing text'
+    for (const o of texts) {
+      const m = /^data:image\/png;base64,(.+)$/.exec(String(o && o.png))
+      const a = Number(o && o.start)
+      const b = Number(o && o.end)
+      if (!m || !(b > a) || a < 0) throw httpError(400, 'A text in the edit could not be read')
+      const buf = Buffer.from(m[1], 'base64')
+      const size = pngSize(buf)
+      if (!size) throw httpError(400, 'A text in the edit could not be read')
+      if (overlayBlank && (size.w !== overlayBlank.w || size.h !== overlayBlank.h)) throw httpError(400, 'Texts were drawn at different sizes')
+      if (!overlayBlank) overlayBlank = { ...size }
+      const f = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+      temps.push(f)
+      await fsp.writeFile(f, buf)
+      overlays.push({ a, b, file: f })
+    }
+    overlays.sort((x, y) => x.a - y.a)
+    if (overlayBlank) {
+      overlayBlank.file = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+      temps.push(overlayBlank.file)
+      const r = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+        '-i', `color=c=black@0:s=${overlayBlank.w}x${overlayBlank.h},format=rgba`, '-frames:v', '1', overlayBlank.file])
+      if (r.code !== 0) throw httpError(500, 'Could not prepare the text layer')
+    }
+    const slice = (at, len) => overlays
+      .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
+      .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
+
+    const common = { main, withOriginal, music, crop, canvas, background, tracks, temps, overlayBlank, quality, gif, fades, job }
+    if (job) job.stage = 'Exporting'
+
     // One finished video: every piece, in order, gaps closed. Always
     // re-encoded, since joining stream-copied pieces glitches at every cut.
     if (body.join) {
-      const target = await reservePath(path.join(outDir, stem + ' edit.mp4'))
-      const r = await render({ ...common, pieces: clean, target, at: 0, overlays: slice(0, clean.reduce((t, p) => t + pieceLength(p), 0)) })
+      const target = await reservePath(path.join(outDir, stem + (gif ? ' edit.gif' : ' edit.mp4')))
+      const r = await render({ ...common, pieces: clean, target, at: 0, overlays: slice(0, totalLen) })
       if (r.code !== 0) await fail(target, r.stderr)
-      res.json({
-        written: [{ name: path.basename(target), size: await sizeOf(target) }],
-        dir: outDir,
-        joined: true,
-        subtitles: r.subtitles,
-        size: { width: r.width, height: r.height }
-      })
-      return
+      const written = [{ name: path.basename(target), size: await sizeOf(target) }]
+      const srt = body.srt && !gif ? await writeSrt(target, captions, 0, totalLen) : null
+      if (srt) written.push({ name: srt, size: await sizeOf(path.join(outDir, srt)), subtitleFile: true })
+      return { written, dir: outDir, joined: true, subtitles: r.subtitles, size: { width: r.width, height: r.height } }
     }
 
     const written = []
     let at = 0
     let subtitles = 0
     for (let i = 0; i < clean.length; i++) {
-      const piece = clean[i]
+      const piece = { ...clean[i], transition: null }
+      const len = pieceLength(piece)
       const label = clean.length > 1 ? ' part ' + (i + 1) : ' cut'
       const target = await reservePath(path.join(outDir, stem + label + '.mp4'))
-      const finished = written.length ? ` Parts already finished: ${written.map((w) => w.name).join(', ')}.` : ''
+      const finished = written.length ? ` Finished parts kept: ${written.map((w) => w.name).join(', ')}.` : ''
       const entry = { name: '', size: 0 }
+      if (job) job.base = at
 
       if (fast) {
         // A stream copy can only begin on a keyframe. It used to seek on the
@@ -1641,24 +1808,66 @@ app.post('/api/export', wrap(async (req, res) => {
         args.push(...sub.outputs, '-c:v', 'copy', '-c:a', 'copy')
         if (subs.length) args.push('-c:s', 'mov_text')
         args.push('-movflags', '+faststart', target)
-        const r = await run('ffmpeg', args)
+        const r = await runTracked(args, job, len)
         if (r.code !== 0) await fail(target, r.stderr, finished)
         Object.assign(entry, { asked: piece.start, startedAt: Math.round(from * 1000) / 1000 })
       } else {
-        const r = await render({ ...common, pieces: [piece], target, at, overlays: slice(at, pieceLength(piece)) })
+        const r = await render({ ...common, pieces: [piece], target, at, overlays: slice(at, len) })
         if (r.code !== 0) await fail(target, r.stderr, finished)
         subtitles = Math.max(subtitles, r.subtitles)
       }
       entry.name = path.basename(target)
       entry.size = await sizeOf(target)
       written.push(entry)
-      at += pieceLength(piece)
+      if (body.srt) {
+        const srt = await writeSrt(target, captions, at, len)
+        if (srt) written.push({ name: srt, size: await sizeOf(path.join(outDir, srt)), subtitleFile: true })
+      }
+      at += len
     }
-
-    res.json({ written, dir: outDir, subtitles })
+    return { written, dir: outDir, subtitles }
   } finally {
     await Promise.all(temps.map((f) => fsp.rm(f, { force: true })))
   }
+}
+
+app.post('/api/export', wrap(async (req, res) => {
+  const body = req.body || {}
+  if (!body.async) {
+    res.json(await doExport(body, null))
+    return
+  }
+  // Long exports run in the background; the editor asks how far along they are.
+  const id = crypto.randomUUID()
+  const job = { id, state: 'running', stage: 'Starting', base: 0, done: 0, total: 0, startedAt: Date.now() }
+  exportJobs.set(id, job)
+  doExport(body, job)
+    .then((result) => { job.state = 'done'; job.result = result })
+    .catch((err) => { job.state = job.cancelled ? 'stopped' : 'error'; job.error = err.message })
+    .finally(() => { setTimeout(() => exportJobs.delete(id), 10 * 60 * 1000) })
+  res.json({ job: id })
+}))
+
+const exportJobs = new Map()
+
+app.get('/api/export/job/:id', wrap(async (req, res) => {
+  const job = exportJobs.get(req.params.id)
+  if (!job) throw httpError(404, 'That export is no longer known')
+  res.json({
+    state: job.state,
+    stage: job.stage,
+    progress: job.total ? Math.min(1, job.done / job.total) : 0,
+    result: job.result || null,
+    error: job.error || null
+  })
+}))
+
+app.post('/api/export/job/:id/stop', wrap(async (req, res) => {
+  const job = exportJobs.get(req.params.id)
+  if (!job) throw httpError(404, 'That export is no longer known')
+  job.cancelled = true
+  try { job.child?.kill() } catch { /* already gone */ }
+  res.json({ ok: true })
 }))
 
 /**

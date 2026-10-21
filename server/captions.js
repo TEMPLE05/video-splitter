@@ -164,7 +164,11 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
         args.push('-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono')
         return
       }
-      args.push('-ss', String(p.start), '-t', String(p.end - p.start), '-i', file)
+      args.push('-ss', String(p.start), '-t', String(p.end - p.start), '-i', p.file || file)
+      if (p.silent) {
+        graph.push(`anullsrc=r=16000:cl=mono,atrim=duration=${p.end - p.start}[a${i}]`)
+        return
+      }
       graph.push(`[${i}:a:0]aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,apad,atrim=duration=${p.end - p.start},asetpts=PTS-STARTPTS[a${i}]`)
     })
     graph.push(`${pieces.map((_, i) => `[a${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[out]`)
@@ -245,15 +249,22 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     if (!meta.hasAudio) throw httpError(400, 'This clip has no sound to caption')
 
     const pieces = []
+    const metas = new Map([[file, meta]])
     for (const p of Array.isArray(body.segments) ? body.segments : []) {
       if (p && p.kind === 'image') {
         const length = Number(p.length)
         if (length > 0) pieces.push({ kind: 'image', length })
-      } else {
-        const start = Math.max(0, Number(p?.start) || 0)
-        const end = Math.min(meta.duration || Number(p?.end), Number(p?.end))
-        if (end - start >= 0.05) pieces.push({ kind: 'video', start, end })
+        continue
       }
+      // A piece from another clip is heard from that clip.
+      const pfile = p && p.src ? resolveInSource(decodeId(String(p.src))) : file
+      if (!metas.has(pfile)) {
+        try { metas.set(pfile, await probe(pfile)) } catch { throw httpError(404, 'A clip in the edit is no longer there') }
+      }
+      const pm = metas.get(pfile)
+      const start = Math.max(0, Number(p?.start) || 0)
+      const end = Math.min(pm.duration || Number(p?.end), Number(p?.end))
+      if (end - start >= 0.05) pieces.push({ kind: 'video', file: pfile, silent: !pm.hasAudio, start, end })
     }
     if (!pieces.length) throw httpError(400, 'Nothing to caption')
 

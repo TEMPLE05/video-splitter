@@ -87,3 +87,10 @@ export const loadEdit = (id) => request('/api/edit/' + encodeURIComponent(id))
 export const saveEdit = (id, edit, extra) => request('/api/edit/' + encodeURIComponent(id), json('PUT', { edit, extra }))
 
 export const forgetEdit = (id) => request('/api/edit/' + encodeURIComponent(id), { method: 'DELETE' })
+
+// Exports run in the background; these start one, follow it, and stop it.
+export const exportStart = (payload) => request('/api/export', json('POST', { ...payload, async: true }))
+
+export const exportJob = (id) => request('/api/export/job/' + encodeURIComponent(id))
+
+export const exportStop = (id) => request('/api/export/job/' + encodeURIComponent(id) + '/stop', { method: 'POST' })

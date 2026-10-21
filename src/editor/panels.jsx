@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatClock } from './model.js'
+import { TRANSITIONS, formatClock } from './model.js'
 import { ANIMS, COLORS, FONTS, SIZE_MAX, SIZE_MIN, STYLES } from './text.js'
 
 export function Tool ({ icon, label, hint, on, title, ...rest }) {
@@ -209,6 +209,69 @@ export function TextPanel ({ item, fresh, captions, onChange, onStyleAll, onDele
         <span className="ed__grow" />
         {item.caption && captions > 1 ? <button className="ed__ghost" onClick={onStyleAll}>Use this look for all {captions} captions</button> : null}
         <button className="ed__ghost ed__ghost--bad" onClick={onDelete}>Delete</button>
+        <button className="ed__go" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  )
+}
+
+const FADE_STEPS = [0, 0.5, 1, 2]
+
+/**
+ * Transitions between pieces, and fading the whole video in and out. A cut is
+ * chosen by clicking its small square on the timeline.
+ */
+export function TransitionPanel ({ join, piece, count, look, playable, onSet, onAll, onFades, onClose }) {
+  const t = piece?.transition || null
+  const d = t ? t.d : 0.6
+  return (
+    <div className="ed__panel ed__panel--text">
+      {join ? (
+        <div className="ed__textrow">
+          <span className="ed__panel-label ed__nogrow">Cut {join} of {count - 1}</span>
+          <Choice on={!t} onClick={() => onSet(null, d)}>None</Choice>
+          {Object.entries(TRANSITIONS).map(([k, label]) => (
+            <Choice key={k} on={t?.type === k} onClick={() => onSet(k, d)}>{label}</Choice>
+          ))}
+        </div>
+      ) : (
+        <p className="ed__panel-hint">Click a small square between two pieces on the timeline to add a transition at that cut.</p>
+      )}
+      {join && t ? (
+        <div className="ed__textrow">
+          <label className="ed__panel-hint ed__vol ed__nogrow">
+            Length
+            <input
+              type="range"
+              min="200"
+              max="2000"
+              step="100"
+              value={Math.round(d * 1000)}
+              onChange={(e) => onSet(t.type, Number(e.target.value) / 1000, 'len:' + join)}
+              aria-label="Transition length"
+            />
+            <span className="ed__vol-n">{d.toFixed(1)} s</span>
+          </label>
+          {count > 2 ? <button className="ed__ghost" onClick={() => onAll(t.type, d)}>Use on every cut</button> : null}
+        </div>
+      ) : null}
+      {join && t && !playable ? (
+        <p className="ed__panel-error">
+          This cut has no spare footage on either side: both pieces run to the very end of their clips there.
+          Trim a little off one of them and the transition will play.
+        </p>
+      ) : null}
+      <div className="ed__textrow">
+        <span className="ed__panel-label ed__nogrow">Fade in</span>
+        {FADE_STEPS.map((v) => (
+          <Choice key={'i' + v} on={(look.fadeIn || 0) === v} onClick={() => onFades({ fadeIn: v })}>{v ? v + ' s' : 'Off'}</Choice>
+        ))}
+        <span className="ed__panel-sep" />
+        <span className="ed__panel-label ed__nogrow">Fade out</span>
+        {FADE_STEPS.map((v) => (
+          <Choice key={'o' + v} on={(look.fadeOut || 0) === v} onClick={() => onFades({ fadeOut: v })}>{v ? v + ' s' : 'Off'}</Choice>
+        ))}
+        <span className="ed__grow" />
         <button className="ed__go" onClick={onClose}>Done</button>
       </div>
     </div>
