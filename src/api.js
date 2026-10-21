@@ -112,3 +112,15 @@ export const tidyInfo = () => request('/api/tidy')
 export const tidyRun = () => request('/api/tidy', { method: 'POST' })
 
 export const tidyUndo = () => request('/api/tidy/undo', { method: 'POST' })
+
+// Fonts imported from this computer, shared by every clip.
+export const listFonts = () => request('/api/fonts')
+
+export const uploadFont = (file) =>
+  request('/api/fonts?name=' + encodeURIComponent(file.name), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file
+  })
+
+export const fontUrl = (file) => '/api/fonts/file/' + encodeURIComponent(file)

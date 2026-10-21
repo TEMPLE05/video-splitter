@@ -2,7 +2,12 @@ import { newId } from './editor/model.js'
 import { useEffect, useRef, useState } from 'react'
 import Timeline from './editor/Timeline.jsx'
 import Stage, { ASPECTS } from './editor/Stage.jsx'
-import { CAPTION_LOOK, captionChunks, newText, rescaleWords, retimeWords } from './editor/text.js'
+import { CAPTION_LOOK, animsOf, captionChunks, layoutText, newText, rescaleWords, retimeWords } from './editor/text.js'
+import { frameSize } from './editor/frame.js'
+import { loadFonts } from './editor/fonts.js'
+
+/** The look of one caption, to copy onto others or save in a look. */
+const captionStyleOf = (c) => ({ x: c.x, y: c.y, size: c.size, font: c.font, style: c.style, color: c.color, ...animsOf(c), hl: c.hl })
 import { Choice, PartsSplit, SoundPanel, TextPanel, Tool, TransitionPanel, TypedSplit } from './editor/panels.jsx'
 import { AudioSheet, CaptionsSheet, ClipSheet, ExportSheet, LooksSheet, MediaSheet } from './editor/sheets.jsx'
 import usePlayback from './editor/usePlayback.js'
@@ -25,13 +30,27 @@ const SHAPES = ['9:16', '1:1', '4:5', '16:9']
 /** A fingerprint of the cuts, to tell when captions were made for other cuts. */
 const cutsOf = (pieces) => pieces.map((p) => (isImage(p) ? 'i' + (p.end - p.start).toFixed(2) : (p.src || '') + p.start.toFixed(2) + '-' + p.end.toFixed(2))).join('|')
 
-const freshEdit = (duration) => ({ pieces: initial(duration), music: null, look: PLAIN_LOOK, texts: [] })
+const freshEdit = (duration) => ({ pieces: initial(duration), sounds: [], look: PLAIN_LOOK, texts: [] })
+
+/**
+ * Edits saved when only one song could be added kept it as `music`, timed by
+ * an offset; it becomes the first of the sounds, playing over the same part.
+ */
+function soundsOf (e, total) {
+  if (Array.isArray(e.sounds)) return e.sounds
+  const m = e.music
+  if (!m) return []
+  const at = Math.max(0, -m.offset)
+  const from = Math.max(0, m.offset)
+  const len = Math.max(0.2, Math.min((m.duration || Infinity) - from, total - at))
+  return [{ id: newId(), media: m.id, name: m.name, duration: m.duration, at, from, len, volume: m.volume ?? 1 }]
+}
 
 /** True when an edit is still the untouched clip, so there is nothing to keep. */
 function isPristine (e, duration) {
   const p = e.pieces
   return p.length === 1 && !isImage(p[0]) && !p[0].src && p[0].start < 1e-3 && Math.abs(p[0].end - duration) < 1e-3 &&
-    !e.music && !(e.texts && e.texts.length) && !e.look.crop && e.look.canvas === 'original' &&
+    !(e.sounds && e.sounds.length) && !e.music && !(e.texts && e.texts.length) && !e.look.crop && e.look.canvas === 'original' &&
     !e.look.fadeIn && !e.look.fadeOut
 }
 
@@ -43,7 +62,8 @@ function restoreEdit (saved, duration) {
     .map((p) => (isImage(p) || p.src ? p : { ...p, start: Math.max(0, p.start), end: Math.min(duration, p.end) }))
     .filter((p) => p.end - p.start >= 0.05)
   if (!pieces.length) return null
-  return { ...freshEdit(duration), ...e, pieces, look: { ...PLAIN_LOOK, ...(e.look || {}) }, texts: e.texts || [] }
+  const sounds = soundsOf(e, totalOf(pieces))
+  return { ...freshEdit(duration), ...e, pieces, sounds, music: undefined, look: { ...PLAIN_LOOK, ...(e.look || {}) }, texts: e.texts || [] }
 }
 
 /**
@@ -96,7 +116,8 @@ export default function Editor ({ video, bucket, onBack }) {
   const [hist, setHist] = useState(null)
   const [draft, setDraft] = useState(null)
   const [lookDraft, setLookDraft] = useState(null)
-  const [musicDraft, setMusicDraft] = useState(null)
+  const [soundDraft, setSoundDraft] = useState(null)
+  const [selectedSoundId, setSelectedSoundId] = useState(null)
   const lookDraftRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
   const [selectedTextId, setSelectedTextId] = useState(null)
@@ -109,7 +130,7 @@ export default function Editor ({ video, bucket, onBack }) {
   const [sources, setSources] = useState({})
   const sourcing = useRef(new Set())
   const [selectedJoin, setSelectedJoin] = useState(null)
-  const [songWave, setSongWave] = useState(null)
+  const [soundWaves, setSoundWaves] = useState({})
   const imagesRef = useRef({})
   const [, setImagesLoaded] = useState(0)
 
@@ -123,13 +144,15 @@ export default function Editor ({ video, bucket, onBack }) {
   const [sheet, setSheet] = useState(null)
   const [note, setNote] = useState(null)
   const [savedAt, setSavedAt] = useState(null)
+  const [, setFontsReady] = useState(0)
   const noteTimer = useRef(0)
   const trimBase = useRef(null)
 
   const edit = hist?.present
   const pieces = draft ?? edit?.pieces ?? []
   const look = lookDraft ?? edit?.look ?? PLAIN_LOOK
-  const music = edit?.music ? { ...edit.music, ...(musicDraft || {}) } : null
+  const sounds = soundDraft ?? edit?.sounds ?? []
+  const selectedSound = sounds.find((x) => x.id === selectedSoundId) || null
   const texts = textDraft ?? edit?.texts ?? []
   const selectedText = texts.find((x) => x.id === selectedTextId) || null
   const total = totalOf(pieces)
@@ -142,7 +165,7 @@ export default function Editor ({ video, bucket, onBack }) {
   const pb = usePlayback(pieces, edit?.pieces, fps, {
     videoMuted: previewMuted || soundOff,
     musicMuted: previewMuted,
-    music: music ? { url: videoUrl(music.id), offset: music.offset, volume: music.volume, duration: music.duration } : null,
+    sounds: sounds.map((x) => ({ id: x.id, url: videoUrl(x.media), at: x.at, from: x.from, len: x.len, volume: x.volume })),
     mainId: video.id,
     durationOf
   })
@@ -207,20 +230,24 @@ export default function Editor ({ video, bucket, onBack }) {
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
 
     loadSource(video.id)
+    // Imported fonts, so texts using them draw right away.
+    loadFonts().then(() => { if (!cancelled) setFontsReady((n) => n + 1) })
 
     return () => { cancelled = true; clearTimeout(noteTimer.current) }
   }, [video.id])
 
-  // The song's waveform, for its lane on the timeline.
-  const songId = edit?.music?.id
+  // Each sound file's waveform, once, for its bars on the timeline.
+  const mediaIds = [...new Set(sounds.map((x) => x.media))].join('|')
   useEffect(() => {
-    if (!songId) { setSongWave(null); return }
-    let cancelled = false
-    getWave(songId)
-      .then((w) => { if (!cancelled) setSongWave({ id: songId, rate: w.rate, peaks: w.peaks ? decodePeaks(w.peaks) : null }) })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [songId])
+    for (const id of mediaIds ? mediaIds.split('|') : []) {
+      if (soundWaves[id] || sourcing.current.has('wave:' + id)) continue
+      sourcing.current.add('wave:' + id)
+      getWave(id)
+        .then((w) => setSoundWaves((m) => ({ ...m, [id]: { rate: w.rate, peaks: w.peaks ? decodePeaks(w.peaks) : null } })))
+        .catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaIds])
 
   // Pictures in the edit, loaded once each for the timeline tiles.
   useEffect(() => {
@@ -442,30 +469,55 @@ export default function Editor ({ video, bucket, onBack }) {
 
   /* ------------------------------------------------------------ sound */
 
+  /**
+   * Adds a sound at the playhead, playing for as long as it lasts or until
+   * the edit ends. The first sound over the whole edit is taken as a
+   * soundtrack and turns the clip's own sound off; shorter ones (an effect,
+   * a voice line) play alongside it.
+   */
   async function addSong (media) {
     setSheet(null)
+    pb.pause()
     let length = 0
     try {
       length = (await probeVideo(media.id)).duration || 0
-    } catch { /* plays anyway; the lane just runs to the end of the edit */ }
-    commitEdit({ music: { id: media.id, name: media.name, duration: length, offset: 0, volume: 1 } })
-    if (info?.hasAudio && !soundOff) {
+    } catch { /* plays anyway; it just runs to the end of the edit */ }
+    let at = pb.now()
+    if (at > total - 0.5) at = 0
+    const len = Math.max(0.2, Math.min(length || total, total - at))
+    const snd = { id: newId(), media: media.id, name: media.name, duration: length, at, from: 0, len, volume: 1 }
+    commitEdit({ sounds: [...(edit.sounds || []), snd] })
+    selectSound(snd.id)
+    const whole = at < 0.5 && len >= total * 0.9
+    if (whole && !(edit.sounds || []).length && info?.hasAudio && !soundOff) {
       setSoundOff(true)
-      flash(`Added ${media.name}. The clip's own sound is now off; turn Clip sound back on to hear both.`)
+      flash(`Added ${media.name} under the whole edit. The clip's own sound is now off; turn Clip sound back on to hear both.`)
     } else {
-      flash(`Added ${media.name}. Drag the green bar to choose which part of it plays.`)
+      flash(`Added ${media.name} at ${formatClock(at, true)}. Drag its green bar to move it, or its ends to trim it.`)
     }
-    setPanel('sound')
   }
 
-  function onMusic ({ offset, phase }) {
-    if (!edit?.music) return
-    if (phase === 'start') { pb.pause(); return }
-    const len = edit.music.duration || total
-    const o = Math.min(Math.max(offset, -(total - 0.2)), Math.max(0, len - 0.2))
-    if (phase === 'move') { setMusicDraft({ offset: o }); return }
-    setMusicDraft(null)
-    if (phase === 'end' && Math.abs(o - edit.music.offset) > 0.001) commitEdit({ music: { ...edit.music, offset: o } })
+  function selectSound (id) {
+    setSelectedSoundId(id)
+    if (id) { setSelectedId(null); setSelectedTextId(null); setPanel('sound') } else if (panel === 'sound') setPanel(null)
+  }
+
+  function updateSound (id, patch, key) {
+    commitEdit({ sounds: (edit.sounds || []).map((x) => (x.id === id ? { ...x, ...patch } : x)) }, key)
+  }
+
+  // Sound bars: moved or trimmed on the timeline.
+  const soundBase = useRef(null)
+  function onSound ({ id, at, from, len, phase }) {
+    if (phase === 'start') { pb.pause(); soundBase.current = edit.sounds || []; return }
+    if (phase === 'click') { selectSound(id === selectedSoundId ? null : id); soundBase.current = null; return }
+    const base = soundBase.current
+    if (!base) return
+    const next = base.map((x) => (x.id === id ? { ...x, at: Math.min(at, Math.max(0, total - 0.2)), from, len: Math.min(len, Math.max(0.2, total - Math.min(at, total - 0.2))) } : x))
+    if (phase === 'move') { setSoundDraft(next); return }
+    soundBase.current = null
+    setSoundDraft(null)
+    if (phase === 'end') { commitEdit({ sounds: next }); selectSound(id) }
   }
 
   /* ---------------------------------------------------------- pictures */
@@ -483,10 +535,10 @@ export default function Editor ({ video, bucket, onBack }) {
 
   /* -------------------------------------------------------------- text */
 
-  const selectPiece = (id) => { setSelectedId(id); if (id) { setSelectedTextId(null); setNote(null) } }
+  const selectPiece = (id) => { setSelectedId(id); if (id) { setSelectedTextId(null); setSelectedSoundId(null); if (panel === 'sound') setPanel(null); setNote(null) } }
   const selectText = (id) => {
     setSelectedTextId(id)
-    if (id) { setSelectedId(null); setNote(null); setPanel('text') } else if (panel === 'text') setPanel(null)
+    if (id) { setSelectedId(null); setSelectedSoundId(null); setNote(null); setPanel('text') } else if (panel === 'text') setPanel(null)
   }
 
   function addText () {
@@ -496,6 +548,16 @@ export default function Editor ({ video, bucket, onBack }) {
     const len = Math.min(3, total)
     const start = Math.max(0, Math.min(T, total - len))
     const item = newText(start, start + len)
+    const showing = texts.filter((x) => !x.caption && x.start < item.end && x.end > item.start)
+    if (showing.length && info) {
+      const { W, H } = frameSize(info, look)
+      const ctx = document.createElement('canvas').getContext('2d')
+      const bottom = Math.max(...showing.map((x) => layoutText(ctx, x, W, H).box.y1)) / H
+      const tall = (layoutText(ctx, item, W, H).box.y1 - layoutText(ctx, item, W, H).box.y0) / H
+      const below = bottom + 0.02 + tall / 2
+      const top = Math.min(...showing.map((x) => layoutText(ctx, x, W, H).box.y0)) / H
+      item.y = below + tall / 2 < 0.96 ? below : Math.max(0.05, top - 0.02 - tall / 2)
+    }
     commitEdit({ texts: [...texts, item] })
     setFreshTextId(item.id)
     if (T < start || T >= start + len) pb.seek(start)
@@ -509,6 +571,11 @@ export default function Editor ({ video, bucket, onBack }) {
         const next = { ...x, ...patch }
         // Edited words keep their heard timings where they still line up.
         if (patch.text !== undefined && x.words) next.words = retimeWords(x.words, patch.text, x.start, x.end)
+        if ((patch.start !== undefined || patch.end !== undefined) && x.words) next.words = rescaleWords(x.words, x, next)
+        // Animations chosen the new way replace the old single setting.
+        if (patch.animIn !== undefined || patch.animOut !== undefined || patch.animLoop !== undefined) {
+          Object.assign(next, { ...animsOf(x), ...patch, anim: undefined })
+        }
         return next
       })
     }, key)
@@ -557,7 +624,7 @@ export default function Editor ({ video, bucket, onBack }) {
 
   /** The style of one caption, copied to every caption. */
   function styleAllCaptions (from) {
-    const look = { x: from.x, y: from.y, size: from.size, font: from.font, style: from.style, color: from.color, anim: from.anim || 'none', hl: from.hl }
+    const look = captionStyleOf(from)
     commitEdit({ texts: edit.texts.map((x) => (x.caption ? { ...x, ...look } : x)), captionLook: look })
     flash('Every caption now looks and moves like this one')
   }
@@ -568,7 +635,7 @@ export default function Editor ({ video, bucket, onBack }) {
     // A caption style already chosen carries over to the new captions.
     const was = (edit.texts || []).find((x) => x.caption)
     const style = edit.captionLook ? edit.captionLook : was
-      ? { x: was.x, y: was.y, size: was.size, font: was.font, style: was.style, color: was.color, anim: was.anim === 'karaoke' || was.anim ? was.anim : 'none', hl: was.hl }
+      ? captionStyleOf(was)
       : CAPTION_LOOK
     const made = chunks.map((c) => ({ id: newId(), caption: true, text: c.text, start: c.start, end: Math.min(c.end, total), words: c.words, ...CAPTION_LOOK, ...style }))
     commitEdit({ texts: [...keep, ...made], captionsFor: cutsOf(pieces) })
@@ -615,7 +682,7 @@ export default function Editor ({ video, bucket, onBack }) {
     ...look,
     cropAspect: info ? info.width / info.height : 1,
     caption: edit?.captionLook || (firstCaption
-      ? { x: firstCaption.x, y: firstCaption.y, size: firstCaption.size, font: firstCaption.font, style: firstCaption.style, color: firstCaption.color, anim: firstCaption.anim || 'none', hl: firstCaption.hl }
+      ? captionStyleOf(firstCaption)
       : null)
   }
 
@@ -627,8 +694,10 @@ export default function Editor ({ video, bucket, onBack }) {
     if (L.fadeIn !== undefined || L.fadeOut !== undefined) { next.fadeIn = L.fadeIn || 0; next.fadeOut = L.fadeOut || 0 }
     const patch = { look: next }
     if (L.caption) {
-      patch.captionLook = L.caption
-      patch.texts = (edit.texts || []).map((x) => (x.caption ? { ...x, ...L.caption } : x))
+      const style = { ...L.caption, ...animsOf(L.caption) }
+      delete style.anim
+      patch.captionLook = style
+      patch.texts = (edit.texts || []).map((x) => (x.caption ? { ...x, ...style, anim: undefined } : x))
     }
     commitEdit(patch)
     flash(`Used the look “${L.name}”. Undo takes it off.`)
@@ -665,7 +734,12 @@ export default function Editor ({ video, bucket, onBack }) {
         case 'Space': e.preventDefault(); pb.toggle(); break
         case 'KeyS': e.preventDefault(); split(); break
         case 'Delete':
-        case 'Backspace': e.preventDefault(); selectedTextId ? deleteText(selectedTextId) : deleteSelected(); break
+        case 'Backspace':
+          e.preventDefault()
+          if (selectedTextId) deleteText(selectedTextId)
+          else if (selectedSoundId) { commitEdit({ sounds: (edit.sounds || []).filter((x) => x.id !== selectedSoundId) }); selectSound(null) }
+          else deleteSelected()
+          break
         case 'ArrowLeft': e.preventDefault(); pb.seek(clampT(pb.now() - (e.shiftKey ? 1 : frame))); break
         case 'ArrowRight': e.preventDefault(); pb.seek(clampT(pb.now() + (e.shiftKey ? 1 : frame))); break
         case 'Home': e.preventDefault(); pb.seek(0); break
@@ -763,7 +837,9 @@ export default function Editor ({ video, bucket, onBack }) {
         onMoveText={onMoveText}
       />
       {/* The added song plays from here, kept in step by the playback engine. */}
-      <audio ref={pb.audioRef} src={music ? videoUrl(music.id) : undefined} preload="auto" />
+      {sounds.map((x) => (
+        <audio key={x.id} ref={(el) => pb.registerAudio(x.id, el)} src={videoUrl(x.media)} preload="auto" />
+      ))}
 
       <div className="ed__transport">
         <button className="ctl" onClick={pb.toggle} disabled={!hist} aria-label={pb.playing ? 'Pause' : 'Play'} title="Play or pause (Space)">
@@ -800,8 +876,9 @@ export default function Editor ({ video, bucket, onBack }) {
         onJoin={(k) => { pb.pause(); setSelectedJoin(k); setSelectedId(null); setPanel('transition') }}
         images={imagesRef.current}
         soundOff={soundOff}
-        music={music ? { ...music, peaks: songWave?.id === music.id ? songWave.peaks : null, rate: songWave?.rate } : null}
-        musicDragging={Boolean(musicDraft)}
+        sounds={sounds}
+        soundWaves={soundWaves}
+        selectedSoundId={selectedSoundId}
         selectedId={selectedId}
         onWidth={setWidth}
         onSeek={(T) => pb.seek(clampT(T))}
@@ -813,10 +890,14 @@ export default function Editor ({ video, bucket, onBack }) {
         onTrim={onTrim}
         onReorder={reorder}
         onZoom={zoomBy}
-        onMusic={onMusic}
+        compact={['text', 'transition', 'sound', 'crop', 'canvas'].includes(panel)}
+        onSound={onSound}
         onAddMusic={() => { pb.pause(); setSheet('audio-pick') }}
       />
 
+      {/* Everything under the timeline. It gives way, scrolling if it must,
+          before the picture does: the picture keeps about half the window. */}
+      <div className="ed__dock">
       {panel === 'at' ? (
         <TypedSplit total={total} onSubmit={splitAtTyped} onClose={() => setPanel(null)} />
       ) : null}
@@ -863,6 +944,7 @@ export default function Editor ({ video, bucket, onBack }) {
           onRedo={redo}
           captions={texts.filter((x) => x.caption).length}
           onChange={(patch, key) => updateText(selectedText.id, patch, key)}
+          total={total}
           onStyleAll={() => styleAllCaptions(selectedText)}
           onDelete={() => deleteText(selectedText.id)}
           onClose={() => selectText(null)}
@@ -881,19 +963,18 @@ export default function Editor ({ video, bucket, onBack }) {
           onClose={() => { setPanel(null); setSelectedJoin(null) }}
         />
       ) : null}
-      {panel === 'sound' && music ? (
+      {panel === 'sound' && selectedSound ? (
         <SoundPanel
-          music={music}
+          key={selectedSound.id}
+          sound={selectedSound}
+          total={total}
           clipSound={!soundOff}
           canClipSound={Boolean(info?.hasAudio)}
           onClipSound={(on) => setSoundOff(!on)}
-          onVolume={(v, done) => {
-            if (!done) setMusicDraft({ volume: v })
-            else { setMusicDraft(null); if (v !== edit.music.volume) commitEdit({ music: { ...edit.music, volume: v } }) }
-          }}
-          onReplace={() => setSheet('audio-pick')}
-          onRemove={() => { commitEdit({ music: null }); setPanel(null); flash('Removed the added sound') }}
-          onClose={() => setPanel(null)}
+          onChange={(patch, key) => updateSound(selectedSound.id, patch, key)}
+          onAnother={() => setSheet('audio-pick')}
+          onRemove={() => { commitEdit({ sounds: (edit.sounds || []).filter((x) => x.id !== selectedSound.id) }); selectSound(null); flash('Removed that sound') }}
+          onClose={() => selectSound(null)}
         />
       ) : null}
 
@@ -907,7 +988,7 @@ export default function Editor ({ video, bucket, onBack }) {
         </div>
       ) : null}
 
-      <nav className="ed__tools" aria-label="Editing tools">
+      <nav className={'ed__tools' + (['text', 'transition', 'sound', 'crop', 'canvas'].includes(panel) ? ' is-hidden' : '')} aria-label="Editing tools">
         <Tool icon={<Scissors />} label="Split" hint="S" onClick={split} disabled={!hist} />
         <Tool icon={<Trash />} label="Delete" hint="Del" onClick={deleteSelected} disabled={!selected || pieces.length < 2} />
         <Tool icon={<Timer />} label="Split at…" onClick={() => togglePanel('at')} on={panel === 'at'} disabled={!hist} />
@@ -938,9 +1019,9 @@ export default function Editor ({ video, bucket, onBack }) {
         <span className="ed__tools-sep" />
         <Tool
           icon={<Music />}
-          label={music ? 'Sound' : 'Add sound'}
-          onClick={() => { pb.pause(); music ? togglePanel('sound') : setSheet('audio-pick') }}
-          on={panel === 'sound' || Boolean(music)}
+          label="Add sound"
+          onClick={() => { pb.pause(); setSheet('audio-pick') }}
+          on={panel === 'sound' || sounds.length > 0}
           disabled={!hist}
         />
         <Tool
@@ -953,6 +1034,7 @@ export default function Editor ({ video, bucket, onBack }) {
         />
         <Tool icon={<Download />} label="Extract audio" onClick={() => { pb.pause(); setSheet('audio') }} disabled={!info || !info.hasAudio} />
       </nav>
+      </div>
 
       {sheet === 'export' ? (
         <ExportSheet
@@ -963,7 +1045,7 @@ export default function Editor ({ video, bucket, onBack }) {
           hasAudio={info.hasAudio}
           soundOff={soundOff}
           onSoundOff={setSoundOff}
-          music={edit.music}
+          sounds={edit.sounds || []}
           look={edit.look}
           texts={edit.texts}
           info={info}

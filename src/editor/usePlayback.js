@@ -21,10 +21,14 @@ import { videoUrl } from '../api.js'
  * Layers the stage draws: 'v0' and 'v1' (the videos), 'still' (the picture
  * on screen) and 'still2' (an incoming picture during a transition).
  */
-export default function usePlayback (list, committed, fps, { videoMuted, musicMuted, music, mainId, durationOf }) {
+export default function usePlayback (list, committed, fps, { videoMuted, musicMuted, sounds, mainId, durationOf }) {
   const aRef = useRef(null)
   const bRef = useRef(null)
-  const audioRef = useRef(null)
+  // One audio element per added sound, registered by the editor as it renders them.
+  const audios = useRef(new Map())
+  const registerAudio = (id, el) => {
+    if (el) { audios.current.set(id, el); el.muted = mutedSongsRef.current } else audios.current.delete(id)
+  }
   const el = (k) => (k === 0 ? aRef : bRef).current
 
   const listRef = useRef(list)
@@ -35,8 +39,10 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
   mainRef.current = mainId
   const mutedRef = useRef(videoMuted)
   mutedRef.current = videoMuted
-  const musicRef = useRef(music)
-  musicRef.current = music
+  const soundsRef = useRef(sounds || [])
+  soundsRef.current = sounds || []
+  const mutedSongsRef = useRef(musicMuted)
+  mutedSongsRef.current = musicMuted
 
   const curRef = useRef(0)
   const tRef = useRef(0)
@@ -48,8 +54,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
   const pendingSeek = useRef([null, null])
   const imgClock = useRef({ t0: 0, at: 0 })
   const mixRef = useRef(null)
-  const songOnRef = useRef(false)
-  const songUrlRef = useRef(null)
+  const songOn = useRef(new Map())
 
   const [t, setT] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -140,29 +145,35 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
 
   const now = () => (playingRef.current ? Math.min(Math.max(timeNow(), 0), total(listRef.current)) : tRef.current)
 
-  /** Keeps the added song where the edit says it should be. */
+  /**
+   * Keeps every added sound where the edit says it should be: playing from
+   * the right moment while the playhead is over it, quiet otherwise.
+   */
   function syncSong (T, force) {
-    const a = audioRef.current
-    const m = musicRef.current
-    if (!a) return
-    // A different song has a fresh element state: it is not playing yet.
-    if ((m?.url || null) !== songUrlRef.current) {
-      songUrlRef.current = m?.url || null
-      songOnRef.current = false
+    const live = new Set()
+    for (const snd of soundsRef.current) {
+      live.add(snd.id)
+      const el = audios.current.get(snd.id)
+      if (!el) continue
+      const on = songOn.current.get(snd.id) === snd.url
+      const inside = playingRef.current && T >= snd.at && T < snd.at + snd.len - 0.03
+      if (!inside) {
+        if (on) { el.pause(); songOn.current.delete(snd.id) }
+        continue
+      }
+      const target = snd.from + (T - snd.at)
+      el.volume = Math.min(1, Math.max(0, snd.volume))
+      if (!on) {
+        el.currentTime = target
+        el.play().catch(() => {})
+        songOn.current.set(snd.id, snd.url)
+      } else if (force || Math.abs(el.currentTime - target) > 0.3) {
+        el.currentTime = target
+      }
     }
-    const target = m ? T + m.offset : -1
-    const inside = m && playingRef.current && target >= 0 && target < (m.duration || Infinity) - 0.05
-    if (!inside) {
-      if (songOnRef.current) { a.pause(); songOnRef.current = false }
-      return
-    }
-    a.volume = Math.min(1, Math.max(0, m.volume))
-    if (!songOnRef.current) {
-      a.currentTime = target
-      a.play().catch(() => {})
-      songOnRef.current = true
-    } else if (force || Math.abs(a.currentTime - target) > 0.3) {
-      a.currentTime = target
+    // A removed sound stops.
+    for (const id of [...songOn.current.keys()]) {
+      if (!live.has(id)) { audios.current.get(id)?.pause(); songOn.current.delete(id) }
     }
   }
 
@@ -422,22 +433,23 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
   }, [videoMuted])
 
   useEffect(() => {
-    if (audioRef.current) audioRef.current.muted = musicMuted
+    for (const el of audios.current.values()) el.muted = musicMuted
   }, [musicMuted])
 
-  // A new song, a slid one or a removed one takes effect at once if playing.
+  // A new sound, a moved one or a removed one takes effect at once if playing.
+  const soundKey = (sounds || []).map((x) => [x.id, x.url, x.at, x.from, x.len, x.volume].join(':')).join('|')
   useEffect(() => {
     if (playingRef.current) syncSong(timeNow(), true)
     else syncSong(tRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [music?.url, music?.offset, music?.volume])
+  }, [soundKey])
 
   useEffect(() => stopLoop, [])
 
   return {
     aRef,
     bRef,
-    audioRef,
+    registerAudio,
     t,
     playing,
     layer,

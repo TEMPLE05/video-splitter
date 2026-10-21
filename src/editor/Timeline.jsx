@@ -13,31 +13,48 @@ import { formatClock, isImage, lengthOf, offsets as offsetsOf, total as totalOf 
 
 const RULER = 24
 const CLIP_TOP = 30
-const FRAMES_H = 50
-const WAVE_H = 26
-const CLIP_H = FRAMES_H + WAVE_H
-const MUSIC_TOP = CLIP_TOP + CLIP_H + 8
-const MUSIC_H = 24
-const TEXT_TOP = MUSIC_TOP + MUSIC_H + 6
-const TEXT_H = 20
-const TEXT_ROW = TEXT_H + 3
-const MAX_ROWS = 3
+// Lane sizes. A compact set is used while a panel is open under the
+// timeline, so the picture keeps its room. One timeline exists at a time, so
+// these are simply switched before each render.
+let FRAMES_H, WAVE_H, CLIP_H, MUSIC_TOP, MUSIC_H, MUSIC_ROW, SOUND_ROWS, TEXT_TOP, TEXT_H, TEXT_ROW, MAX_ROWS
+function setDims (compact) {
+  FRAMES_H = compact ? 30 : 50
+  WAVE_H = compact ? 12 : 26
+  CLIP_H = FRAMES_H + WAVE_H
+  MUSIC_TOP = CLIP_TOP + CLIP_H + (compact ? 5 : 8)
+  MUSIC_H = compact ? 16 : 22
+  MUSIC_ROW = MUSIC_H + 3
+  SOUND_ROWS = 1
+  TEXT_TOP = MUSIC_TOP + MUSIC_H + (compact ? 4 : 6)
+  TEXT_H = compact ? 15 : 20
+  TEXT_ROW = TEXT_H + 3
+  MAX_ROWS = compact ? 2 : 3
+}
+setDims(false)
 const HANDLE = 12
 const DRAG_SLOP = 4
 const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
 const FONT = "11px Roboto, 'Segoe UI', sans-serif"
 
-/** Texts stacked into rows so overlapping ones sit one above the other. */
-function textRows (texts) {
+/** Items stacked into rows so overlapping ones sit one above the other. */
+function stackRows (items, startOf, endOf, max) {
   const ends = []
   const rows = new Map()
-  for (const t of [...(texts || [])].sort((a, b) => a.start - b.start)) {
-    let r = ends.findIndex((e) => e <= t.start + 1e-6)
+  for (const t of [...(items || [])].sort((a, b) => startOf(a) - startOf(b))) {
+    let r = ends.findIndex((e) => e <= startOf(t) + 1e-6)
     if (r < 0) { r = ends.length; ends.push(0) }
-    ends[r] = t.end
-    rows.set(t.id, Math.min(r, MAX_ROWS - 1))
+    ends[r] = endOf(t)
+    rows.set(t.id, Math.min(r, max - 1))
   }
-  return { rows, count: Math.max(1, Math.min(MAX_ROWS, ends.length)) }
+  return { rows, count: Math.max(1, Math.min(max, ends.length)) }
+}
+const textRows = (texts) => stackRows(texts, (t) => t.start, (t) => t.end, MAX_ROWS)
+const soundRows = (sounds) => stackRows(sounds, (x) => x.at, (x) => x.at + x.len, 2)
+
+/** Sound rows decide where the text rows start. */
+function setLanes (sounds) {
+  SOUND_ROWS = soundRows(sounds).count
+  TEXT_TOP = MUSIC_TOP + SOUND_ROWS * MUSIC_ROW - 3 + (FRAMES_H < 50 ? 4 : 6)
 }
 
 const heightFor = (texts) => TEXT_TOP + textRows(texts).count * TEXT_ROW + 8
@@ -54,6 +71,21 @@ function lastAtOrBefore (times, s) {
   return lo
 }
 
+/**
+ * A sound being dragged: moved whole, or trimmed from either end. Trimming
+ * the start moves where it starts on the timeline and how far into the sound
+ * it begins together, so what you hear stays lined up with what you see.
+ */
+function soundSpan (d, dt) {
+  if (d.edge === 'move') return { at: Math.max(0, d.at + dt), from: d.from, len: d.len }
+  if (d.edge === 'start') {
+    const k = Math.min(Math.max(dt, -d.from, -d.at), d.len - 0.2)
+    return { at: d.at + k, from: d.from + k, len: d.len - k }
+  }
+  const room = (d.dur || Infinity) - d.from
+  return { at: d.at, from: d.from, len: Math.min(Math.max(d.len + dt, 0.2), room) }
+}
+
 function textSpan (d, dt) {
   const len = d.end - d.start
   if (d.edge === 'move') {
@@ -65,6 +97,8 @@ function textSpan (d, dt) {
 }
 
 export default function Timeline (props) {
+  setDims(Boolean(props.compact))
+  setLanes(props.sounds)
   const boxRef = useRef(null)
   const canvasRef = useRef(null)
   const live = useRef(props)
@@ -103,14 +137,14 @@ export default function Timeline (props) {
       x1: X(offs[i] + lengthOf(piece))
     }))
     const end = totalOf(p.pieces)
-    // The song lane: the song's time at timeline time T is T + offset, so it
-    // begins at -offset and runs for its own length, shown within the edit.
-    let song = null
-    if (p.music) {
-      const from = Math.max(0, -p.music.offset)
-      const to = Math.min(end, (p.music.duration || Infinity) - p.music.offset)
-      if (to > from) song = { x0: X(from), x1: X(to), from, to }
-    }
+    // Sounds: each plays from `at` on the timeline for `len` seconds.
+    const sRows = soundRows(p.sounds).rows
+    const sbars = (p.sounds || []).map((snd) => ({
+      snd,
+      x0: X(snd.at),
+      x1: X(snd.at + snd.len),
+      y: MUSIC_TOP + (sRows.get(snd.id) || 0) * MUSIC_ROW
+    }))
     const { rows } = textRows(p.texts)
     const bars = (p.texts || []).map((t) => ({
       t,
@@ -118,7 +152,7 @@ export default function Timeline (props) {
       x1: X(t.end),
       y: TEXT_TOP + (rows.get(t.id) || 0) * TEXT_ROW
     }))
-    return { p, W, cx, X, rects, end, song, bars }
+    return { p, W, cx, X, rects, end, sbars, bars }
   }
 
   function dropIndex (id, x) {
@@ -127,7 +161,9 @@ export default function Timeline (props) {
   }
 
   function hitTest (x, y) {
-    const { p, rects, song, bars } = layout()
+    setDims(Boolean(live.current.compact))
+    setLanes(live.current.sounds)
+    const { p, rects, sbars, bars } = layout()
     if (y < CLIP_TOP - 2) return { zone: 'ruler' }
     if (y >= TEXT_TOP - 2) {
       // Selected first, so its edges win over a neighbour's.
@@ -141,9 +177,16 @@ export default function Timeline (props) {
       }
       return bars.length ? { zone: 'none' } : { zone: 'addtext' }
     }
-    if (y >= MUSIC_TOP - 3 && y <= MUSIC_TOP + MUSIC_H + 3) {
-      if (p.music && song && x >= song.x0 - 4 && x <= song.x1 + 4) return { zone: 'music' }
-      return p.music ? { zone: 'none' } : { zone: 'addmusic' }
+    if (y >= MUSIC_TOP - 3 && y <= MUSIC_TOP + SOUND_ROWS * MUSIC_ROW) {
+      const order = [...sbars].sort((a, b) => (b.snd.id === p.selectedSoundId) - (a.snd.id === p.selectedSoundId))
+      for (const b of order) {
+        if (y < b.y - 1 || y > b.y + MUSIC_H + 1 || x < b.x0 - 5 || x > b.x1 + 5) continue
+        const edges = b.x1 - b.x0 > 22
+        if (edges && x <= b.x0 + 6) return { zone: 'sound', edge: 'start', snd: b.snd }
+        if (edges && x >= b.x1 - 6) return { zone: 'sound', edge: 'end', snd: b.snd }
+        return { zone: 'sound', edge: 'move', snd: b.snd }
+      }
+      return sbars.length ? { zone: 'none' } : { zone: 'addmusic' }
     }
     if (y > CLIP_TOP + CLIP_H + 4) return { zone: 'none' }
     const cy = CLIP_TOP + CLIP_H / 2
@@ -165,6 +208,8 @@ export default function Timeline (props) {
   }
 
   function draw () {
+    setDims(Boolean(live.current.compact))
+    setLanes(live.current.sounds)
     const c = canvasRef.current
     const { w: W, dpr } = size.current
     if (!c || !W) return
@@ -354,27 +399,32 @@ export default function Timeline (props) {
       ctx.restore()
     }
 
-    // The song lane.
-    const { song } = layout()
-    if (p.music && song) {
-      const a = Math.max(song.x0, -4)
-      const b = Math.min(song.x1, W + 4)
+    // The sound lane: a green bar for each sound, its waveform inside.
+    const { sbars } = layout()
+    for (const b of sbars) {
+      if (b.x1 < -2 || b.x0 > W + 2) continue
+      const snd = b.snd
+      const a = Math.max(b.x0 + 0.5, -4)
+      const e = Math.min(b.x1 - 0.5, W + 4)
+      const sel = snd.id === p.selectedSoundId
       ctx.save()
       ctx.beginPath()
-      ctx.roundRect(a, MUSIC_TOP, b - a, MUSIC_H, 6)
+      ctx.roundRect(a, b.y, Math.max(2, e - a), MUSIC_H, 5)
+      ctx.fillStyle = sel ? 'rgba(94, 200, 140, 0.5)' : 'rgba(94, 200, 140, 0.26)'
+      ctx.fill()
+      if (sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke() }
       ctx.clip()
-      ctx.fillStyle = p.musicDragging ? 'rgba(94, 200, 140, 0.42)' : 'rgba(94, 200, 140, 0.26)'
-      ctx.fillRect(a, MUSIC_TOP, b - a, MUSIC_H)
-      if (p.music.peaks && p.music.peaks.length) {
+      const wave = p.soundWaves && p.soundWaves[snd.media]
+      if (wave && wave.peaks && wave.peaks.length) {
         ctx.fillStyle = 'rgba(160, 235, 190, 0.85)'
-        const mid = MUSIC_TOP + MUSIC_H / 2
-        const rate = p.music.rate || 50
-        for (let px = Math.max(a, 0); px < Math.min(b, W); px += 2) {
-          const s0 = p.t + (px - cx) / p.pps + p.music.offset
+        const mid = b.y + MUSIC_H / 2
+        const rate = wave.rate || 50
+        for (let px = Math.max(a, 0); px < Math.min(e, W); px += 2) {
+          const s0 = snd.from + (px - b.x0) / p.pps
           const i0 = Math.floor(s0 * rate)
-          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, p.music.peaks.length)
+          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, wave.peaks.length)
           let peak = 0
-          for (let i = Math.max(i0, 0); i < i1; i++) if (p.music.peaks[i] > peak) peak = p.music.peaks[i]
+          for (let i = Math.max(i0, 0); i < i1; i++) if (wave.peaks[i] > peak) peak = wave.peaks[i]
           const h = Math.max(1, (peak / 255) * (MUSIC_H - 6))
           ctx.fillRect(px, mid - h / 2, 1.4, h)
         }
@@ -382,9 +432,10 @@ export default function Timeline (props) {
       ctx.font = FONT
       ctx.textAlign = 'left'
       ctx.fillStyle = '#eafff2'
-      ctx.fillText('♪ ' + p.music.name, Math.max(a, 0) + 8, MUSIC_TOP + MUSIC_H / 2 + 0.5)
+      ctx.fillText('♪ ' + snd.name, Math.max(a, 0) + 6, b.y + MUSIC_H / 2 + 0.5)
       ctx.restore()
-    } else if (!p.music) {
+    }
+    if (!sbars.length) {
       ctx.font = FONT
       ctx.textAlign = 'left'
       ctx.fillStyle = 'rgba(232, 234, 237, 0.34)'
@@ -478,9 +529,10 @@ export default function Timeline (props) {
       p.onText({ id: hit.item.id, phase: 'start' })
       return
     }
-    if (hit.zone === 'music') {
-      drag.current = { mode: 'music', from: p.music.offset, x0: e.clientX }
-      p.onMusic({ offset: p.music.offset, phase: 'start' })
+    if (hit.zone === 'sound') {
+      const sd = hit.snd
+      drag.current = { mode: 'sound', id: sd.id, edge: hit.edge, at: sd.at, from: sd.from, len: sd.len, dur: sd.duration, x0: e.clientX, moved: false }
+      p.onSound({ id: sd.id, phase: 'start' })
       return
     }
     drag.current = { mode: 'pending', hit, x0: e.clientX, y0: e.clientY, t0: p.t, x }
@@ -494,7 +546,7 @@ export default function Timeline (props) {
       const hit = hitTest(x, y)
       e.currentTarget.style.cursor = hit.zone === 'handle' ? 'ew-resize'
         : hit.zone === 'ruler' || hit.zone === 'addmusic' || hit.zone === 'addtext' || hit.zone === 'join' ? 'pointer'
-          : hit.zone === 'music' ? 'move'
+          : hit.zone === 'sound' ? (hit.edge === 'move' ? 'move' : 'ew-resize')
             : hit.zone === 'text' ? (hit.edge === 'move' ? 'move' : 'ew-resize')
               : hit.zone === 'move' ? 'grab' : 'grab'
       return
@@ -510,9 +562,10 @@ export default function Timeline (props) {
       p.onText({ id: d.id, ...textSpan(d, dx / p.pps), phase: 'move' })
       return
     }
-    // Dragging the song right makes it start later, so less of it has played.
-    if (d.mode === 'music') {
-      p.onMusic({ offset: d.from - dx / p.pps, phase: 'move' })
+    if (d.mode === 'sound') {
+      if (!d.moved && Math.abs(dx) < DRAG_SLOP) return
+      d.moved = true
+      p.onSound({ id: d.id, ...soundSpan(d, dx / p.pps), phase: 'move' })
       return
     }
     if (d.mode === 'pendingmove' && Math.abs(dx) > DRAG_SLOP) d.mode = 'reorder'
@@ -539,8 +592,9 @@ export default function Timeline (props) {
       p.onTrim({ id: d.id, edge: d.edge, to: d.from + (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
       return
     }
-    if (d.mode === 'music') {
-      p.onMusic({ offset: d.from - (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
+    if (d.mode === 'sound') {
+      if (!d.moved) p.onSound({ id: d.id, phase: 'click' })
+      else p.onSound({ id: d.id, ...soundSpan(d, (e.clientX - d.x0) / p.pps), phase: cancelled ? 'cancel' : 'end' })
       return
     }
     if (d.mode === 'text') {

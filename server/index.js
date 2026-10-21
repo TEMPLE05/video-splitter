@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
+import { mountFonts } from './fonts.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -447,7 +448,9 @@ function cleanLook (b) {
     look.caption = {
       x: num(c.x, 0, 1, 0.5), y: num(c.y, 0, 1, 0.78), size: num(c.size, 0.02, 0.2, 0.05),
       font: String(c.font || 'heavy').slice(0, 20), style: String(c.style || 'outline').slice(0, 20),
-      color: /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : '#ffffff', anim: String(c.anim || 'none').slice(0, 20),
+      color: /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : '#ffffff',
+      animIn: String(c.animIn || 'none').slice(0, 20), animOut: String(c.animOut || 'none').slice(0, 20),
+      animLoop: String(c.animLoop || (c.anim === 'karaoke' ? 'karaoke' : 'none')).slice(0, 20),
       hl: /^#[0-9a-f]{6}$/i.test(c.hl) ? c.hl : '#ffe14d'
     }
   }
@@ -1503,7 +1506,7 @@ function runTracked (args, job, outLen) {
  * the edit keeps exactly its length and everything timed to it (song, text,
  * captions) stays where it was put.
  */
-async function render ({ main, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
+async function render ({ main, pieces, target, withOriginal, sounds, crop, canvas, background, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
   const meta = main.meta
   const Q = QUALITY[quality] || QUALITY.standard
   const { W, H, padded } = frameSize(meta, crop, canvas, Q.cap)
@@ -1596,22 +1599,27 @@ async function render ({ main, pieces, target, withOriginal, music, crop, canvas
   graph.push(`${v}null[vout]`)
   if (withOriginal) graph.push(`${a}anull[base]`)
 
+  // Added sounds, each placed at its own moment and mixed over the clip's
+  // own sound. Only the part of each that falls inside this render is read.
   let audioOut = withOriginal ? '[base]' : null
   let next = pieces.length
-  if (music && !gif) {
-    // The song's own time at the first moment of this render. Negative means
-    // the song has not started yet, so it waits.
-    const songAt = at + music.offset
-    if (songAt > 0) args.push('-ss', String(songAt))
-    args.push('-i', music.file)
-    const wait = songAt < 0 ? `,adelay=${Math.round(-songAt * 1000)}:all=1` : ''
-    graph.push(`[${next}:a:0]${AFMT},volume=${music.volume}${wait},apad,atrim=duration=${total},asetpts=PTS-STARTPTS[song]`)
+  const added = []
+  for (const snd of gif ? [] : sounds || []) {
+    const from = Math.max(snd.at, at)
+    const to = Math.min(snd.at + snd.len, at + total)
+    if (to - from < 0.02) continue
+    args.push('-ss', String(snd.from + (from - snd.at)), '-t', String(to - from), '-i', snd.file)
+    graph.push(`[${next}:a:0]${AFMT},volume=${snd.volume},adelay=${Math.round((from - at) * 1000)}:all=1,apad,atrim=duration=${total},asetpts=PTS-STARTPTS[snd${next}]`)
+    added.push(`[snd${next}]`)
     next += 1
-    if (withOriginal) {
-      graph.push('[base][song]amix=inputs=2:duration=first:normalize=0[mixed]')
-      audioOut = '[mixed]'
+  }
+  if (added.length) {
+    const all = [...(withOriginal ? ['[base]'] : []), ...added]
+    if (all.length === 1) {
+      audioOut = all[0]
     } else {
-      audioOut = '[song]'
+      graph.push(`${all.join('')}amix=inputs=${all.length}:duration=first:normalize=0[mixed]`)
+      audioOut = '[mixed]'
     }
   }
 
@@ -1749,12 +1757,28 @@ async function doExport (body, job) {
     clean.push({ kind: 'video', file: pfile, meta: pm, start, end, transition })
   }
 
-  let music = null
-  if (body.music && body.music.id) {
-    const mfile = resolveInSource(decodeId(String(body.music.id)))
-    if (!fs.existsSync(mfile)) throw httpError(404, 'The added sound file is no longer there')
-    const volume = Math.min(Math.max(Number(body.music.volume ?? 1), 0), 2)
-    music = { file: mfile, offset: Number(body.music.offset) || 0, volume }
+  // Sounds laid over the edit. An older edit sends one song as `music`,
+  // timed by an offset, which is the same as one sound over that stretch.
+  const editLength = clean.reduce((t, p) => t + pieceLength(p), 0)
+  let soundsIn = Array.isArray(body.sounds) ? body.sounds : []
+  if (!soundsIn.length && body.music && body.music.id) {
+    const off = Number(body.music.offset) || 0
+    soundsIn = [{ id: body.music.id, at: Math.max(0, -off), from: Math.max(0, off), len: editLength, volume: body.music.volume }]
+  }
+  if (soundsIn.length > 50) throw httpError(400, 'Too many sounds; keep it to 50')
+  const sounds = []
+  for (const x of soundsIn) {
+    const sfile = resolveInSource(decodeId(String(x && x.id)))
+    if (!fs.existsSync(sfile)) throw httpError(404, 'An added sound file is no longer there')
+    const len = Number(x.len)
+    if (!(len > 0)) continue
+    sounds.push({
+      file: sfile,
+      at: Math.max(0, Number(x.at) || 0),
+      from: Math.max(0, Number(x.from) || 0),
+      len,
+      volume: Math.min(Math.max(Number(x.volume ?? 1), 0), 2)
+    })
   }
   const look = body.look || {}
   const crop = cleanCrop(look.crop)
@@ -1770,7 +1794,7 @@ async function doExport (body, job) {
   if (gif && !body.join) throw httpError(400, 'A GIF is always one file; choose One video')
   if (gif && totalLen > 60) throw httpError(400, 'A GIF of more than a minute would be enormous; keep it under 60 seconds')
 
-  const plain = !music && !crop && canvas === 'original' && !texts.length && !fades.in && !fades.out && quality === 'standard' &&
+  const plain = !sounds.length && !crop && canvas === 'original' && !texts.length && !fades.in && !fades.out && quality === 'standard' &&
     clean.every((p) => p.kind === 'video' && p.file === file)
   const fast = body.mode === 'fast' && !body.join && plain
 
@@ -1824,7 +1848,7 @@ async function doExport (body, job) {
       .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
       .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
 
-    const common = { main, withOriginal, music, crop, canvas, background, tracks, temps, overlayBlank, quality, gif, fades, job }
+    const common = { main, withOriginal, sounds, crop, canvas, background, tracks, temps, overlayBlank, quality, gif, fades, job }
     if (job) job.stage = 'Exporting'
 
     // One finished video: every piece, in order, gaps closed. Always
@@ -2037,6 +2061,7 @@ app.post('/api/bucket/:id/audio', wrap(async (req, res) => {
 
 /* ----------------------------------------------------- static build, if any */
 
+mountFonts(app, { ROOT, wrap, httpError })
 mountCaptions(app, { ROOT, CACHE_DIR, wrap, httpError, resolveInSource, decodeId, probe, haveTools })
 
 const DIST = path.join(ROOT, 'dist')

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import Thumb from './Thumb.jsx'
-import { Back, Check, Close, Folder, Music, Scissors, Trash } from './icons.jsx'
+import { Back, Check, Close, Folder, More, Music, Scissors, Trash } from './icons.jsx'
 import {
   getState, listBucket, moveClips, pullBucketAudio, thumbUrl, tidyInfo, tidyRun, tidyUndo, trashClips, videoUrl
 } from './api.js'
@@ -125,6 +125,73 @@ function useEscape (onClose, busy) {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose, busy])
+}
+
+/**
+ * Saves the sound of every clip in the folder as its own audio file, in the
+ * folder's audio subfolder, for listening without the picture (prayers,
+ * talks, songs). Clips already done are skipped, so it is safe to run again
+ * after adding more.
+ */
+function PullAudioSheet ({ bucket, count, onCancel }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [done, setDone] = useState(null)
+  useEscape(onCancel, busy)
+
+  async function go (format) {
+    setBusy(true)
+    setError(null)
+    try {
+      setDone(await pullBucketAudio(bucket.id, format))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="sheetwrap" onClick={() => !busy && onCancel()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Pull the audio from all {plural(count, 'clip')}</h2>
+        {!done ? (
+          <>
+            <p className="sheet__body">
+              Saves each clip's sound as its own audio file, in an <strong>audio</strong> folder
+              inside “{bucket.name}”, so you can listen in any music player without the picture.
+              The clips themselves are not changed. Clips already done are skipped.
+            </p>
+            <div className="choices">
+              <button className="choice" onClick={() => go('mp3')} disabled={busy}>
+                <strong>MP3</strong>
+                <span>Plays on any phone, car or app. Best for a listening playlist.</span>
+              </button>
+              <button className="choice" onClick={() => go('copy')} disabled={busy}>
+                <strong>Keep quality</strong>
+                <span>Copied straight out, nothing lost, nearly instant. Some players will not open it.</span>
+              </button>
+            </div>
+            {busy ? <p className="sheet__body">Working through the clips… this can take a minute.</p> : null}
+          </>
+        ) : (
+          <div className="written">
+            <p className="written__head">
+              <Check size={14} /> {done.done} pulled
+              {done.already > 0 ? ', ' + done.already + ' already there' : ''}
+              {done.silent > 0 ? ', ' + done.silent + ' had no sound' : ''}
+              {done.failed > 0 ? ', ' + done.failed + ' failed' : ''}
+            </p>
+            <p className="written__where" title={done.dir}>{done.dir}</p>
+          </div>
+        )}
+        {error ? <p className="sheet__error">{error}</p> : null}
+        <div className="sheet__actions">
+          <button className="pill" onClick={onCancel} disabled={busy}>{done ? 'Done' : 'Cancel'}</button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** Asks before anything goes to the Recycle Bin, and names what will. */
@@ -311,12 +378,12 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [removing, setRemoving] = useState(null)
-  const [grabbing, setGrabbing] = useState(false)
-  const [grabbed, setGrabbed] = useState(null)
   const [selected, setSelected] = useState(() => new Set())
   const [sheet, setSheet] = useState(null)
   const [notice, setNotice] = useState(null)
   const [tidy, setTidy] = useState(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [menu, setMenu] = useState(false)
   const lastPick = useRef(null)
 
   const scroller = useRef(null)
@@ -326,10 +393,11 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
   const open = state.buckets.find((b) => b.id === openId) || null
   const videos = data ? data.videos : []
   const picked = videos.filter((v) => selected.has(v.id))
+  const selecting = selectMode || picked.length > 0
+  const clearSelection = () => { setSelected(new Set()); setSelectMode(false) }
 
   function goInto (id) {
     pendingScroll.current = 0
-    setGrabbed(null)
     setError(null)
     setSelected(new Set())
     setNotice(null)
@@ -339,7 +407,6 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
 
   function goUp () {
     pendingScroll.current = 0
-    setGrabbed(null)
     setError(null)
     setData(null)
     setSelected(new Set())
@@ -377,21 +444,6 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
     if (s) onState(s)
   }
 
-  async function grabAll () {
-    if (!openId || grabbing) return
-    setGrabbing(true)
-    setError(null)
-    setGrabbed(null)
-    try {
-      setGrabbed(await pullBucketAudio(openId))
-      // The header shows how many tracks are in the audio folder; refresh it.
-      setData(await listBucket(openId))
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setGrabbing(false)
-    }
-  }
 
   useEffect(() => {
     if (!openId) {
@@ -425,6 +477,7 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
   useEffect(() => {
     function onKey (event) {
       if (removing || sheet) return
+      if (menu && event.key === 'Escape') { setMenu(false); return }
       const tag = event.target.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
       if (openId && (event.ctrlKey || event.metaKey) && event.code === 'KeyA') {
@@ -441,7 +494,7 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
       // lets go of a selection.
       if (event.key === 'Escape' || event.key === 'Backspace') {
         event.preventDefault()
-        if (selected.size) setSelected(new Set())
+        if (selecting) clearSelection()
         else if (openId) goUp()
         else if (event.key === 'Escape') onBack()
       }
@@ -468,23 +521,30 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
     return (
       <div className="library">
         <header className="libbar">
-          <div className="libbar__left">
-            <button className="ctl" onClick={goUp} title="Up to all folders (Esc)" aria-label="Up to all folders">
-              <Back size={18} />
-            </button>
-            <nav className="crumbtrail" aria-label="Location">
-              <button className="crumbtrail__link" onClick={goUp}>Library</button>
-              <span className="crumbtrail__sep">›</span>
-              <h1 className="libbar__title" title={open.name}>{open.name}</h1>
-            </nav>
-          </div>
-          {data && picked.length ? (
+          {selecting ? (
+            <div className="libbar__left">
+              <button className="ctl" onClick={clearSelection} title="Stop selecting (Esc)" aria-label="Stop selecting">
+                <Close size={18} />
+              </button>
+              <h1 className="libbar__title">{picked.length ? `${picked.length} selected` : 'Select clips'}</h1>
+            </div>
+          ) : (
+            <div className="libbar__left">
+              <button className="ctl" onClick={goUp} title="Up to all folders (Esc)" aria-label="Up to all folders">
+                <Back size={18} />
+              </button>
+              <nav className="crumbtrail" aria-label="Location">
+                <button className="crumbtrail__link" onClick={goUp}>Library</button>
+                <span className="crumbtrail__sep">›</span>
+                <h1 className="libbar__title" title={open.name}>{open.name}</h1>
+              </nav>
+            </div>
+          )}
+          {data && selecting ? (
             <div className="libbar__right selbar">
-              <span className="libbar__count"><strong>{picked.length}</strong> selected</span>
-              <button className="pill pill--sm" onClick={() => setSelected(new Set(videos.map((v) => v.id)))} disabled={picked.length === videos.length}>Select all</button>
-              <button className="pill pill--sm" onClick={() => setSheet('move')}><Folder size={15} /> Move to…</button>
-              <button className="pill pill--sm pill--danger" onClick={() => setSheet('trash')}><Trash size={15} /> Delete</button>
-              <button className="ctl" onClick={() => setSelected(new Set())} title="Clear the selection (Esc)" aria-label="Clear the selection"><Close size={16} /></button>
+              <button className="textbtn" onClick={() => setSelected(new Set(videos.map((v) => v.id)))} disabled={picked.length === videos.length}>Select all</button>
+              <button className="ctl" onClick={() => setSheet('move')} disabled={!picked.length} title="Move to another bucket" aria-label="Move to…"><Folder size={18} /></button>
+              <button className="ctl ctl--bad" onClick={() => setSheet('trash')} disabled={!picked.length} title="Move to the Recycle Bin (Delete)" aria-label="Delete"><Trash size={18} /></button>
             </div>
           ) : data ? (
             <div className="libbar__right">
@@ -494,15 +554,24 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
                 {data.audio > 0 ? <><span className="dot">·</span><strong>{data.audio}</strong> audio</> : null}
               </span>
               {data.videos.length > 0 ? (
-                <button
-                  className="pill pill--sm"
-                  onClick={grabAll}
-                  disabled={grabbing}
-                  title="Pull the audio from every clip here into one folder"
-                >
-                  <Music size={15} />
-                  {grabbing ? 'Pulling audio…' : 'Pull all audio'}
-                </button>
+                <div className="menuwrap">
+                  <button className="ctl" onClick={() => setMenu((m) => !m)} title="More" aria-label="More" aria-expanded={menu}>
+                    <More size={18} />
+                  </button>
+                  {menu ? (
+                    <>
+                      <div className="menu__scrim" onClick={() => setMenu(false)} />
+                      <div className="menu" role="menu">
+                        <button role="menuitem" onClick={() => { setMenu(false); setSelectMode(true) }}>
+                          <Check size={16} /> Select clips
+                        </button>
+                        <button role="menuitem" onClick={() => { setMenu(false); setSheet('pull') }}>
+                          <Music size={16} /> Pull all audio…
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           ) : null}
@@ -515,27 +584,9 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
           </div>
         ) : null}
 
-        {grabbed ? (
-          <div className="grabbed">
-            <div className="grabbed__text">
-              <p className="grabbed__head">
-                <Check size={14} /> {grabbed.done} pulled
-                {grabbed.already > 0 ? `, ${grabbed.already} already there` : ''}
-                {grabbed.silent > 0 ? `, ${grabbed.silent} had no sound` : ''}
-                {grabbed.failed > 0 ? `, ${grabbed.failed} failed` : ''}
-              </p>
-              <p className="grabbed__where">
-                Point any music player at <code>{grabbed.dir}</code>
-              </p>
-            </div>
-            <button className="grabbed__close" onClick={() => setGrabbed(null)} aria-label="Dismiss">
-              <Close size={13} />
-            </button>
-          </div>
-        ) : null}
 
         <div
-          className={'grid' + (picked.length ? ' is-selecting' : '')}
+          className={'grid' + (selecting ? ' is-selecting' : '')}
           ref={scroller}
           onScroll={(e) => { scrollNow.current = e.currentTarget.scrollTop }}
         >
@@ -548,7 +599,7 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
               video={v}
               onOpen={() => openClip(v)}
               selected={selected.has(v.id)}
-              selecting={picked.length > 0}
+              selecting={selecting}
               onSelect={(e) => toggle(v, e)}
             />
           )) : null}
@@ -560,10 +611,17 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
             onCancel={() => setSheet(null)}
             onDone={async (r, partly) => {
               if (!partly) setSheet(null)
-              setSelected(new Set())
+              clearSelection()
               setNotice(`Moved ${plural(r.trashed.length, 'clip')} to the Recycle Bin`)
               await refresh()
             }}
+          />
+        ) : null}
+        {sheet === 'pull' ? (
+          <PullAudioSheet
+            bucket={open}
+            count={videos.length}
+            onCancel={async () => { setSheet(null); await refresh() }}
           />
         ) : null}
         {sheet === 'move' ? (
@@ -574,7 +632,7 @@ export default function Library ({ state, onState, onOpen, onBack, place, onPlac
             onCancel={() => setSheet(null)}
             onDone={async (r, label) => {
               setSheet(null)
-              setSelected(new Set())
+              clearSelection()
               setNotice(`Moved ${plural(r.moved.length, 'clip')} to ${label}${r.failed.length ? `; ${r.failed.length} could not be moved` : ''}`)
               await refresh()
             }}

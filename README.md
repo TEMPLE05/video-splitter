@@ -209,9 +209,10 @@ makes them as you look, a few at a time; after that they appear instantly.
 
 ### Choosing clips: move or delete
 
-The round tick in a card's corner selects it. `Ctrl`-click also selects,
-`Shift`-click selects everything between, and `Ctrl`+`A` selects the whole
-folder. Once anything is selected, a bar at the top offers:
+The round tick in a card's corner selects it, or choose **Select clips** from
+the **⋯** menu. `Ctrl`-click also selects, `Shift`-click selects everything
+between, and `Ctrl`+`A` selects the whole folder. Once anything is
+selected, the top bar shows how many, with buttons to:
 
 - **Move to…** another bucket, or back to the sorting queue to be sorted again.
   Saved edits go with the clips.
@@ -220,6 +221,14 @@ folder. Once anything is selected, a bar at the top offers:
   Nothing is deleted outright. Exports and pulled audio stay where they are.
 
 `Delete` on the keyboard does the same, and `Esc` lets go of the selection.
+
+### Pulling all the audio
+
+**Pull all audio…**, in a folder's **⋯** menu, saves every clip's sound as its
+own file in that folder's `audio` subfolder, for listening without the
+picture: prayers, talks, songs. **MP3** plays anywhere; **Keep quality**
+copies the sound out untouched. Clips already done are skipped, so it is safe
+to run again after adding more.
 
 ### Tidying up the main folder
 
@@ -293,13 +302,15 @@ switch between one video and separate parts in the export window at any time.
 
 ### Sound, crop, canvas and pictures
 
-- **Add sound** lays a song or any sound file under the whole edit. Pick one
+- **Add sound** places a song or any sound file at the playhead. Pick one
   from the bucket (audio you pulled out of another clip is listed), or choose
   one from anywhere on your computer; it is copied into the bucket's `audio`
-  folder. The clip's own sound turns off, so the song replaces it. Turn **Clip
-  sound** back on to hear both. The song shows as a green bar under the clip:
-  drag it to choose which part of the song plays, and set its volume in the
-  Sound panel.
+  folder. Add as many as you like, each at its own time: a song underneath, a
+  sound effect at 0:04, a voice line later. Each is a green bar: drag it to
+  move it, drag its ends to trim it, click it to set its volume, when it
+  starts, and where in the file it starts playing from. A first sound that
+  covers the whole edit turns the clip's own sound off, so it replaces it;
+  **Clip sound** turns it back on to hear both.
 - **Crop** shows the whole picture with a box over it. Drag the box, its
   corners or its edges; pulling the top and bottom edges in crops the height.
   The 9:16, 1:1, 4:5 and 16:9 buttons lock the box to that shape.
@@ -313,15 +324,22 @@ switch between one video and separate parts in the export window at any time.
 
 ### Text
 
-**Text** adds a line of text at the playhead, showing for three seconds. Type
-into the box; the tabs underneath set the rest:
+**Text** adds a line of text at the playhead, showing for three seconds. A
+second text added while another is showing goes underneath it rather than on
+top. Type into the box; the tabs underneath set the rest:
 
-- **Font:** Clean, Heavy, Black, Narrow, Serif, Type, Hand and Script.
+- **Font:** Clean, Heavy, Black, Narrow, Serif, Type, Hand and Script, plus
+  any font you import. **Import font…** takes a `.ttf`, `.otf`, `.woff` or
+  `.woff2` file, such as a free one from Google Fonts or DaFont; it is kept in
+  a `.fonts` folder next to the app and offered for every clip from then on.
 - **Style:** Outline, Box, Pill, Marker, Shadow, Lifted, Neon, Hollow and
   Plain.
-- **Animation:** Pop, Fade, Rise, Typewriter, Wobble, Bounce and Pulse.
-  Hand lettering wobbles by default, a small shake eight times a second, like
-  a line drawn by hand.
+- **Animation:** when the text shows, typed exactly (from 0:02 to 0:05, say),
+  and three choices: how it arrives (**In**: Pop, Fade, Rise, Drop, Zoom,
+  Typewriter), how it leaves (**Out**: Fade, Pop, Sink, Lift, Zoom), and what
+  it does while showing (Wobble, Bounce, Pulse). Several texts with their own
+  times make a sequence: one line, then the next. Hand lettering wobbles by
+  default, a small shake eight times a second, like a line drawn by hand.
 - **Colour**, and a size slider.
 
 Drag the text on the picture to move it; it snaps to the middle. On the
@@ -476,7 +494,9 @@ again as needed.
 `.tools` holds whisper.cpp and its language model, once downloaded for
 captions. Deleting it just means downloading them again next time.
 
-All four are gitignored.
+`.fonts` holds the fonts you imported for text.
+
+All five are gitignored.
 
 ## Still to come
 
@@ -493,6 +513,7 @@ server/index.js       API: scans folders, streams video, moves files, renders ex
 server/captions.js    Downloads whisper.cpp on first use and transcribes the edit
 server/edits.js       Saves each clip's edit as you work
 server/library.js     Recycle Bin, moving clips between buckets, tidying up
+server/fonts.js       Fonts imported for text
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
 src/Player.jsx        Video stage and transport for sorting
@@ -506,6 +527,7 @@ src/editor/usePlayback.js  Plays the edit: two players, clips, pictures, transit
 src/editor/Stage.jsx  The picture as exported: crop, canvas, fill, blends, text
 src/editor/text.js    Draws and animates text, the same for preview and export
 src/editor/frame.js   Size of the finished frame, matching the server
+src/editor/fonts.js   Loads imported fonts into the browser
 src/editor/panels.jsx Panels under the timeline: text, sound, transitions, splitting
 src/editor/sheets.jsx Windows: export, captions, looks, adding clips and media
 src/SourcePicker.jsx  Server-side folder browser

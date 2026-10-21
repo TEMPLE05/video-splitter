@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatClock, isImage } from './model.js'
 import { frameSize } from './frame.js'
-import { ANIMS, FONTS, STYLES, drawText, textFrames } from './text.js'
+import { ANIMS, STYLES, animsOf, drawText, fontOf, textFrames } from './text.js'
 import { Choice } from './panels.jsx'
 import { Captions, Check, Download, Music } from '../icons.jsx'
 import {
@@ -185,7 +185,7 @@ const segmentsOf = (pieces, mainId) => pieces.map((p) => {
   return { ...(p.src && p.src !== mainId ? { src: p.src } : {}), start: p.start, end: p.end, ...t }
 })
 
-export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, music, look, texts, info, mode, onMode, onClose }) {
+export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, sounds, look, texts, info, mode, onMode, onClose }) {
   const [fast, setFast] = useState(false)
   const [format, setFormat] = useState('mp4')
   const [quality, setQuality] = useState('standard')
@@ -204,7 +204,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
   const gif = format === 'gif'
   const tooLongForGif = total > 60
   // A stream copy cannot crop, fill, add pictures or text, blend or mix in a song.
-  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some((p) => isImage(p) || p.transition || (p.src && p.src !== video.id)) &&
+  const plain = !sounds.length && !look.crop && look.canvas === 'original' && !pieces.some((p) => isImage(p) || p.transition || (p.src && p.src !== video.id)) &&
     !(texts || []).length && !look.fadeIn && !look.fadeOut && quality === 'standard' && !gif
 
   async function go () {
@@ -225,7 +225,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
         join: mode === 'join' || gif,
         stripAudio: soundOff,
         mode: mode === 'parts' && fast && plain ? 'fast' : 'accurate',
-        music: music ? { id: music.id, offset: music.offset, volume: music.volume } : null,
+        sounds: sounds.map((x) => ({ id: x.media, at: x.at, from: x.from, len: x.len, volume: x.volume })),
         look,
         quality,
         format,
@@ -258,7 +258,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
   const extras = [
     look.crop ? 'cropped' : null,
     look.canvas !== 'original' ? `${look.canvas} with a ${look.background === 'black' ? 'black' : 'blurred'} fill` : null,
-    music ? `♪ ${music.name}` : null,
+    sounds.length === 1 ? `♪ ${sounds[0].name}` : sounds.length > 1 ? `${sounds.length} sounds` : null,
     captions.length ? 'captions' : null,
     texts && texts.some((x) => !x.caption) ? `${texts.filter((x) => !x.caption).length} text${texts.filter((x) => !x.caption).length === 1 ? '' : 's'}` : null,
     cuts ? `${cuts} transition${cuts === 1 ? '' : 's'}` : null,
@@ -330,7 +330,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
             <input type="checkbox" checked={soundOff} onChange={(e) => onSoundOff(e.target.checked)} disabled={busy || !hasAudio} />
             <span>
               Remove the clip's own sound
-              <em>{!hasAudio ? 'This clip has no sound anyway.' : music ? 'Only the added song will play.' : 'A silent video, so you can add your own audio.'}</em>
+              <em>{!hasAudio ? 'This clip has no sound anyway.' : sounds.length ? 'Only the added sounds will play.' : 'A silent video, so you can add your own audio.'}</em>
             </span>
           </label>
         ) : null}
@@ -697,7 +697,10 @@ export function describeLook (L) {
   if (L.crop) parts.push('crop ' + Math.round((L.crop.w * (L.cropAspect || 1) / L.crop.h) * 100) / 100 + ':1')
   if (L.canvas && L.canvas !== 'original') parts.push(`${L.canvas} with a ${L.background === 'black' ? 'black' : 'blurred'} fill`)
   else if (L.canvas === 'original') parts.push('original shape')
-  if (L.caption) parts.push(`captions in ${FONTS[L.caption.font]?.label || L.caption.font}, ${STYLES[L.caption.style] || L.caption.style}${L.caption.anim && L.caption.anim !== 'none' ? ', ' + (ANIMS[L.caption.anim] || L.caption.anim).toLowerCase() : ''}`)
+  if (L.caption) {
+    const moves = Object.values(animsOf(L.caption)).filter((a) => a !== 'none').map((a) => (ANIMS[a] || a).toLowerCase())
+    parts.push(`captions in ${fontOf(L.caption.font).label}, ${STYLES[L.caption.style] || L.caption.style}${moves.length ? ', ' + moves.join(' and ') : ''}`)
+  }
   if (L.fadeIn || L.fadeOut) parts.push(`fade ${L.fadeIn ? 'in ' + L.fadeIn + ' s' : ''}${L.fadeIn && L.fadeOut ? ', ' : ''}${L.fadeOut ? 'out ' + L.fadeOut + ' s' : ''}`)
   if (L.autoCaptions) parts.push('makes captions')
   return parts.join(' · ') || 'nothing yet'

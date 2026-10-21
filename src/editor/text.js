@@ -35,17 +35,21 @@ export const STYLES = {
   plain: 'Plain'
 }
 
-export const ANIMS = {
-  none: 'None',
-  pop: 'Pop',
-  fade: 'Fade',
-  rise: 'Rise',
-  type: 'Typewriter',
-  wobble: 'Wobble',
-  bounce: 'Bounce',
-  pulse: 'Pulse',
-  karaoke: 'Word by word'
+// How a text arrives, how it leaves, and what it does while on screen.
+export const IN_ANIMS = { none: 'None', pop: 'Pop', fade: 'Fade', rise: 'Rise', drop: 'Drop', zoom: 'Zoom', type: 'Typewriter' }
+export const OUT_ANIMS = { none: 'None', fade: 'Fade', pop: 'Pop', sink: 'Sink', lift: 'Lift', zoom: 'Zoom' }
+export const LOOP_ANIMS = { none: 'None', wobble: 'Wobble', bounce: 'Bounce', pulse: 'Pulse', karaoke: 'Word by word' }
+export const ANIMS = { ...IN_ANIMS, ...OUT_ANIMS, ...LOOP_ANIMS }
+
+/**
+ * Fonts imported from this computer, registered with the browser by name.
+ * The key saved in an edit is 'font:' + the family name.
+ */
+export const CUSTOM_FONTS = {}
+export function registerFont (family) {
+  CUSTOM_FONTS['font:' + family] = { label: family, custom: true, css: (px) => `${px}px '${family.replace(/'/g, '')}', 'Segoe UI', sans-serif` }
 }
+export const fontOf = (key) => FONTS[key] || CUSTOM_FONTS[key] || FONTS.clean
 
 export const COLORS = ['#ffffff', '#ffe14d', '#ff9f43', '#ff5a5a', '#ff8ad8', '#b18cff', '#8ab4f8', '#5ec88c', '#000000']
 
@@ -53,10 +57,10 @@ export const SIZE_MIN = 0.025
 export const SIZE_MAX = 0.14
 
 export function newText (start, end) {
-  return { id: newId(), text: 'Your text', start, end, x: 0.5, y: 0.5, size: 0.06, font: 'clean', style: 'outline', color: '#ffffff', anim: 'none' }
+  return { id: newId(), text: 'Your text', start, end, x: 0.5, y: 0.5, size: 0.06, font: 'clean', style: 'outline', color: '#ffffff', animIn: 'none', animOut: 'none', animLoop: 'none' }
 }
 
-export const CAPTION_LOOK = { x: 0.5, y: 0.78, size: 0.05, font: 'heavy', style: 'outline', color: '#ffffff', anim: 'none', hl: '#ffe14d' }
+export const CAPTION_LOOK = { x: 0.5, y: 0.78, size: 0.05, font: 'heavy', style: 'outline', color: '#ffffff', animIn: 'none', animOut: 'none', animLoop: 'none', hl: '#ffe14d' }
 
 const isDark = (hex) => {
   const n = parseInt(String(hex).slice(1), 16)
@@ -85,7 +89,7 @@ function wrap (ctx, text, maxW) {
 /** Where a text sits on a W x H frame, and the box it covers, before animation. */
 export function layoutText (ctx, t, W, H) {
   const px = Math.max(4, t.size * H)
-  ctx.font = (FONTS[t.font] || FONTS.clean).css(px)
+  ctx.font = fontOf(t.font).css(px)
   const lines = wrap(ctx, t.text, W * 0.88)
   const space = ctx.measureText(' ').width
   const widths = lines.map((ws) => ctx.measureText(ws.map((x) => x.w).join(' ')).width)
@@ -102,33 +106,74 @@ export function layoutText (ctx, t, W, H) {
 
 const clamp01 = (v) => Math.min(1, Math.max(0, v))
 const easeOutCubic = (p) => 1 - Math.pow(1 - p, 3)
+const easeInCubic = (p) => p * p * p
 const easeOutBack = (p) => 1 + 2.2 * Math.pow(p - 1, 3) + 1.2 * Math.pow(p - 1, 2)
 // Repeatable noise, so a wobble looks the same every time it plays.
 const noise = (n) => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x) }
-const inLength = (t) => Math.min(0.35, (t.end - t.start) / 2)
+const inLength = (t) => Math.min(0.35, (t.end - t.start) / 3)
+const outLength = (t) => Math.min(0.35, (t.end - t.start) / 3)
 const typeLength = (t) => Math.min(1.2, (t.end - t.start) * 0.6)
 const WOBBLE_RATE = 8
+
+/**
+ * A text's three animations: how it arrives, how it leaves, and what it does
+ * while on screen. Edits saved before these were split had one `anim`, which
+ * is read here as the nearest equivalent.
+ */
+export function animsOf (t) {
+  if (t.animIn !== undefined || t.animOut !== undefined || t.animLoop !== undefined) {
+    return { animIn: t.animIn || 'none', animOut: t.animOut || 'none', animLoop: t.animLoop || 'none' }
+  }
+  const a = t.anim || 'none'
+  if (a === 'fade') return { animIn: 'fade', animOut: 'fade', animLoop: 'none' }
+  if (IN_ANIMS[a] && a !== 'none') return { animIn: a, animOut: 'none', animLoop: 'none' }
+  if (LOOP_ANIMS[a]) return { animIn: 'none', animOut: 'none', animLoop: a }
+  return { animIn: 'none', animOut: 'none', animLoop: 'none' }
+}
 
 /** How a text looks `time` seconds after it appears. */
 export function animState (t, time) {
   const s = { alpha: 1, scale: 1, dx: 0, dy: 0, rot: 0, chars: Infinity, word: -1 }
   const len = t.end - t.start
+  const { animIn, animOut, animLoop } = animsOf(t)
+
+  // Arriving.
   const p = clamp01(time / Math.max(inLength(t), 1e-3))
-  switch (t.anim) {
-    case 'pop': s.scale = 0.55 + 0.45 * easeOutBack(p); s.alpha = clamp01(p * 2.5); break
-    case 'fade': s.alpha = Math.min(p, clamp01((len - time) / Math.max(inLength(t), 1e-3))); break
-    case 'rise': s.dy = (1 - easeOutCubic(p)) * 0.05; s.alpha = p; break
+  switch (animIn) {
+    case 'pop': s.scale *= 0.55 + 0.45 * easeOutBack(p); s.alpha *= clamp01(p * 2.5); break
+    case 'fade': s.alpha *= p; break
+    case 'rise': s.dy += (1 - easeOutCubic(p)) * 0.05; s.alpha *= p; break
+    case 'drop': s.dy -= (1 - easeOutCubic(p)) * 0.05; s.alpha *= p; break
+    case 'zoom': s.scale *= 1.6 - 0.6 * easeOutCubic(p); s.alpha *= p; break
     case 'type': s.chars = Math.floor(t.text.length * clamp01(time / typeLength(t))); break
+    default: break
+  }
+
+  // Leaving.
+  const q = clamp01((time - (len - outLength(t))) / Math.max(outLength(t), 1e-3))
+  if (q > 0) {
+    switch (animOut) {
+      case 'fade': s.alpha *= 1 - q; break
+      case 'pop': s.scale *= 1 - 0.5 * easeInCubic(q); s.alpha *= 1 - q; break
+      case 'sink': s.dy += easeInCubic(q) * 0.05; s.alpha *= 1 - q; break
+      case 'lift': s.dy -= easeInCubic(q) * 0.05; s.alpha *= 1 - q; break
+      case 'zoom': s.scale *= 1 + 0.6 * easeInCubic(q); s.alpha *= 1 - q; break
+      default: break
+    }
+  }
+
+  // While on screen.
+  switch (animLoop) {
     case 'wobble': {
       // Hand-drawn "boil": a new tiny tilt and nudge eight times a second.
       const k = Math.floor(time * WOBBLE_RATE)
-      s.rot = (noise(k) - 0.5) * 0.06
-      s.dx = (noise(k + 0.37) - 0.5) * 0.006
-      s.dy = (noise(k + 0.71) - 0.5) * 0.006
+      s.rot += (noise(k) - 0.5) * 0.06
+      s.dx += (noise(k + 0.37) - 0.5) * 0.006
+      s.dy += (noise(k + 0.71) - 0.5) * 0.006
       break
     }
-    case 'bounce': s.dy = -Math.abs(Math.sin(time * Math.PI * 1.5)) * 0.012; break
-    case 'pulse': s.scale = 1 + 0.045 * Math.sin(time * Math.PI * 2 * 1.1); break
+    case 'bounce': s.dy -= Math.abs(Math.sin(time * Math.PI * 1.5)) * 0.012; break
+    case 'pulse': s.scale *= 1 + 0.045 * Math.sin(time * Math.PI * 2 * 1.1); break
     case 'karaoke': {
       const at = t.start + time
       const words = t.words || []
@@ -260,44 +305,39 @@ function paint (ctx, s, x, y, px, style, fill, color) {
 /**
  * The moments of a text worth drawing for the export, each with the stretch
  * of time it covers. A still text is one picture; a moving one is a short run
- * of them, as many as the movement needs: thirty a second while popping in,
- * eight a second for a hand-drawn wobble, one per letter for a typewriter,
- * one per word for a word-by-word caption.
+ * of them, as many as the movement needs: thirty a second while arriving or
+ * leaving, eight a second for a hand-drawn wobble, twenty for a bounce, one
+ * per letter for a typewriter, one per word for a word-by-word caption.
  */
 export function textFrames (t) {
   const len = t.end - t.start
-  const out = []
-  const push = (a, b, time) => { if (b - a > 1e-4) out.push({ start: t.start + a, end: t.start + Math.min(b, len), time }) }
-  const steps = (from, to, step) => { for (let a = from; a < to - 1e-6; a += step) push(a, Math.min(a + step, to), a) }
-  const IN = inLength(t)
-  switch (t.anim) {
-    case 'pop':
-    case 'rise':
-      steps(0, IN, 1 / 30)
-      push(IN, len, IN)
-      break
-    case 'fade':
-      steps(0, IN, 1 / 30)
-      push(IN, len - IN, IN)
-      steps(len - IN, len, 1 / 30)
-      break
-    case 'type': {
-      const n = t.text.length
-      const d = typeLength(t)
-      for (let k = 0; k < n; k++) push((d * k) / n, (d * (k + 1)) / n, (d * k) / n + 1e-6)
-      push(d, len, d)
-      break
-    }
-    case 'wobble': steps(0, len, 1 / WOBBLE_RATE); break
-    case 'bounce':
-    case 'pulse': steps(0, len, 1 / 20); break
-    case 'karaoke': {
-      const cuts = [0, ...(t.words || []).map((w) => w.a - t.start).filter((v) => v > 1e-3 && v < len), len]
-      for (let k = 0; k < cuts.length - 1; k++) push(cuts[k], cuts[k + 1], cuts[k] + 1e-6)
-      break
-    }
-    default: push(0, len, len)
+  const { animIn, animOut, animLoop } = animsOf(t)
+  const cuts = [0, len]
+  const every = (from, to, step) => { for (let a = from; a < to - 1e-6; a += step) cuts.push(a) }
+
+  if (animIn === 'type') {
+    const n = t.text.length
+    const d = typeLength(t)
+    for (let k = 1; k <= n; k++) cuts.push((d * k) / n)
+  } else if (animIn !== 'none') {
+    every(0, inLength(t), 1 / 30)
+    cuts.push(inLength(t))
   }
+  if (animOut !== 'none') {
+    every(len - outLength(t), len, 1 / 30)
+  }
+  if (animLoop === 'wobble') every(0, len, 1 / WOBBLE_RATE)
+  if (animLoop === 'bounce' || animLoop === 'pulse') every(0, len, 1 / 20)
+  if (animLoop === 'karaoke') for (const w of t.words || []) cuts.push(w.a - t.start)
+
+  const points = [...new Set(cuts.filter((v) => v >= 0 && v <= len).map((v) => Math.round(v * 10000) / 10000))].sort((a, b) => a - b)
+  const out = []
+  for (let k = 0; k < points.length - 1; k++) {
+    if (points[k + 1] - points[k] < 1e-4) continue
+    out.push({ start: t.start + points[k], end: t.start + points[k + 1], time: points[k] + 1e-6 })
+  }
+  // A still text is one picture for its whole time.
+  if (animIn === 'none' && animOut === 'none' && animLoop === 'none') return [{ start: t.start, end: t.end, time: len }]
   return out
 }
 
