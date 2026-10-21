@@ -259,6 +259,31 @@ The preview shows all of this as it will come out, and Undo covers every
 change. The export re-encodes when any of these are used; the fast cut is only
 offered when none are.
 
+### Text and auto captions
+
+- **Text** adds a line of text at the playhead, showing for three seconds.
+  Type into the box, then pick a font, a style (outline, box, shadow or plain),
+  a colour and a size. Drag the text on the picture to move it; it snaps to the
+  middle. On the timeline it is an amber bar: drag it to change when it shows,
+  or drag its ends to change how long.
+- **Captions** listens to the speech in the edit and writes it out a few words
+  at a time, the way TikTok and CapCut show them. Click any caption, on the
+  picture or the timeline, to fix a word or restyle it, and "Use this style for
+  all captions" copies that look to every one. Captions are violet bars on the
+  timeline. Make your cuts first: captions follow the edit as it is when you
+  make them.
+
+Captions are worked out on this computer by [whisper.cpp](https://github.com/ggml-org/whisper.cpp);
+nothing is uploaded. The first time anyone asks for captions, the app offers a
+one-time download into a `.tools` folder next to it: the program (8 MB) and a
+language model, **Quick** (148 MB) or **Better** (488 MB). After that it works
+offline. A short clip takes a few seconds; a nine-minute episode about a
+minute. On macOS and Linux, install whisper.cpp so `whisper-cli` is on your
+PATH and the app uses that instead.
+
+Text is drawn by the editor and laid over the video on export, so the finished
+file looks exactly like the preview.
+
 ### Pulling the audio out
 
 **Extract audio** writes the clip's whole soundtrack to its own file in an
@@ -369,7 +394,10 @@ src/Editor.jsx        The editor screen, its tools and the export window
 src/editor/model.js   The edit as a list of pieces, and the operations on it
 src/editor/Timeline.jsx  Canvas timeline: frames, waveform, trimming, scrubbing
 src/editor/usePlayback.js  Plays the edit: two videos swapped at cuts, pictures, the added song
-src/editor/Stage.jsx  The picture as exported: crop, canvas, blurred fill, crop box
+src/editor/Stage.jsx  The picture as exported: crop, canvas, blurred fill, crop box, text
+src/editor/text.js    Draws text, the same for preview and export; groups words into captions
+src/editor/frame.js   Size of the finished frame, matching the server
+server/captions.js    Downloads whisper.cpp on first use and transcribes the edit
 src/SourcePicker.jsx  Server-side folder browser
 src/icons.jsx         Inline SVG icon set
 src/api.js            Fetch wrappers

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 
-// Must match ASPECTS on the server, which renders the same shapes.
-export const ASPECTS = { '9:16': 9 / 16, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '3:4': 3 / 4 }
+import { ASPECTS } from './frame.js'
+import { drawText, layoutText } from './text.js'
+
+export { ASPECTS }
 const MIN_CROP = 0.06
 
 const contain = (aspect, box) => {
@@ -20,7 +22,7 @@ const contain = (aspect, box) => {
  *
  * In crop mode the whole uncropped frame shows, with the crop box over it.
  */
-export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, src, stillUrl, onClick, loading }) {
+export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, src, stillUrl, onClick, loading, texts, selectedTextId, onSelectText, onMoveText }) {
   const boxRef = useRef(null)
   const bgRef = useRef(null)
   const dragRef = useRef(null)
@@ -151,6 +153,17 @@ export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, sr
           ))}
         </div>
         {pb.still ? <img className="ed__still" src={stillUrl} alt="" /> : null}
+        {!cropping && texts && texts.length ? (
+          <TextLayer
+            texts={texts}
+            t={pb.t}
+            width={frame.w}
+            height={frame.h}
+            selectedId={selectedTextId}
+            onSelect={onSelectText}
+            onMove={onMoveText}
+          />
+        ) : null}
 
         {cropping ? (
           <div className="crop" onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
@@ -169,5 +182,91 @@ export default function Stage ({ info, look, cropping, cropRatio, onCrop, pb, sr
       </div>
       {loading ? <span className="ed__loading">Opening…</span> : null}
     </div>
+  )
+}
+
+/**
+ * The texts showing at the playhead, drawn with the same code the export uses.
+ * Click a text to select it and drag it to move it; a click anywhere else
+ * falls through to the picture, which plays and pauses.
+ */
+export function TextLayer ({ texts, t, width, height, selectedId, onSelect, onMove }) {
+  const ref = useRef(null)
+  const dragRef = useRef(null)
+  const clickedRef = useRef(false)
+  const shown = texts.filter((x) => t >= x.start - 1e-6 && t < x.end)
+
+  useEffect(() => {
+    const c = ref.current
+    if (!c || !width || !height) return
+    const dpr = window.devicePixelRatio || 1
+    if (c.width !== Math.round(width * dpr)) c.width = Math.round(width * dpr)
+    if (c.height !== Math.round(height * dpr)) c.height = Math.round(height * dpr)
+    const ctx = c.getContext('2d')
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, width, height)
+    for (const x of shown) {
+      const L = drawText(ctx, x, width, height)
+      if (x.id === selectedId) {
+        ctx.save()
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'
+        ctx.setLineDash([5, 4])
+        ctx.lineWidth = 1.5
+        ctx.strokeRect(L.box.x0, L.box.y0, L.box.x1 - L.box.x0, L.box.y1 - L.box.y0)
+        ctx.restore()
+      }
+    }
+  })
+
+  function hit (e) {
+    const r = ref.current.getBoundingClientRect()
+    const x = e.clientX - r.left
+    const y = e.clientY - r.top
+    const ctx = ref.current.getContext('2d')
+    // Topmost first, the one drawn last.
+    for (let i = shown.length - 1; i >= 0; i--) {
+      const { box } = layoutText(ctx, shown[i], width, height)
+      if (x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1) return { item: shown[i], x, y }
+    }
+    return null
+  }
+
+  return (
+    <canvas
+      ref={ref}
+      className="ed__texts"
+      style={{ width, height }}
+      onPointerDown={(e) => {
+        const h = hit(e)
+        clickedRef.current = Boolean(h)
+        if (!h) return
+        e.stopPropagation()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        onSelect(h.item.id)
+        dragRef.current = { id: h.item.id, x0: e.clientX, y0: e.clientY, fx: h.item.x, fy: h.item.y, moved: false }
+      }}
+      onPointerMove={(e) => {
+        const d = dragRef.current
+        if (!d) {
+          e.currentTarget.style.cursor = hit(e) ? 'move' : 'pointer'
+          return
+        }
+        const dx = (e.clientX - d.x0) / width
+        const dy = (e.clientY - d.y0) / height
+        if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 3) return
+        d.moved = true
+        let x = Math.min(Math.max(d.fx + dx, 0), 1)
+        const y = Math.min(Math.max(d.fy + dy, 0), 1)
+        // Snaps to the middle, where most text belongs.
+        if (Math.abs(x - 0.5) < 0.015) x = 0.5
+        onMove(d.id, x, y, 'move')
+      }}
+      onPointerUp={() => {
+        const d = dragRef.current
+        dragRef.current = null
+        if (d && d.moved) onMove(d.id, null, null, 'end')
+      }}
+      onClick={(e) => { if (clickedRef.current) e.stopPropagation() }}
+    />
   )
 }

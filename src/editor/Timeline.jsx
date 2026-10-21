@@ -18,11 +18,29 @@ const WAVE_H = 26
 const CLIP_H = FRAMES_H + WAVE_H
 const MUSIC_TOP = CLIP_TOP + CLIP_H + 8
 const MUSIC_H = 24
-const HEIGHT = MUSIC_TOP + MUSIC_H + 10
+const TEXT_TOP = MUSIC_TOP + MUSIC_H + 6
+const TEXT_H = 20
+const TEXT_ROW = TEXT_H + 3
+const MAX_ROWS = 3
 const HANDLE = 12
 const DRAG_SLOP = 4
 const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
 const FONT = "11px Roboto, 'Segoe UI', sans-serif"
+
+/** Texts stacked into rows so overlapping ones sit one above the other. */
+function textRows (texts) {
+  const ends = []
+  const rows = new Map()
+  for (const t of [...(texts || [])].sort((a, b) => a.start - b.start)) {
+    let r = ends.findIndex((e) => e <= t.start + 1e-6)
+    if (r < 0) { r = ends.length; ends.push(0) }
+    ends[r] = t.end
+    rows.set(t.id, Math.min(r, MAX_ROWS - 1))
+  }
+  return { rows, count: Math.max(1, Math.min(MAX_ROWS, ends.length)) }
+}
+
+const heightFor = (texts) => TEXT_TOP + textRows(texts).count * TEXT_ROW + 8
 
 function lastAtOrBefore (times, s) {
   let lo = 0
@@ -34,6 +52,16 @@ function lastAtOrBefore (times, s) {
     else hi = mid - 1
   }
   return lo
+}
+
+function textSpan (d, dt) {
+  const len = d.end - d.start
+  if (d.edge === 'move') {
+    const start = Math.max(0, d.start + dt)
+    return { start, end: start + len }
+  }
+  if (d.edge === 'start') return { start: Math.min(Math.max(0, d.start + dt), d.end - 0.2), end: d.end }
+  return { start: d.start, end: Math.max(d.end + dt, d.start + 0.2) }
 }
 
 export default function Timeline (props) {
@@ -52,7 +80,7 @@ export default function Timeline (props) {
       const dpr = window.devicePixelRatio || 1
       const c = canvasRef.current
       c.width = Math.round(w * dpr)
-      c.height = Math.round(HEIGHT * dpr)
+      c.height = Math.round(heightFor(live.current.texts) * dpr)
       size.current = { w, dpr }
       live.current.onWidth?.(w)
       redraw((n) => n + 1)
@@ -83,12 +111,31 @@ export default function Timeline (props) {
       const to = Math.min(end, (p.music.duration || Infinity) - p.music.offset)
       if (to > from) song = { x0: X(from), x1: X(to), from, to }
     }
-    return { p, W, cx, X, rects, end, song }
+    const { rows } = textRows(p.texts)
+    const bars = (p.texts || []).map((t) => ({
+      t,
+      x0: X(t.start),
+      x1: X(t.end),
+      y: TEXT_TOP + (rows.get(t.id) || 0) * TEXT_ROW
+    }))
+    return { p, W, cx, X, rects, end, song, bars }
   }
 
   function hitTest (x, y) {
-    const { p, rects, song } = layout()
+    const { p, rects, song, bars } = layout()
     if (y < CLIP_TOP - 2) return { zone: 'ruler' }
+    if (y >= TEXT_TOP - 2) {
+      // Selected first, so its edges win over a neighbour's.
+      const order = [...bars].sort((a, b) => (b.t.id === p.selectedTextId) - (a.t.id === p.selectedTextId))
+      for (const b of order) {
+        if (y < b.y - 1 || y > b.y + TEXT_H + 1 || x < b.x0 - 5 || x > b.x1 + 5) continue
+        const edges = b.x1 - b.x0 > 22
+        if (edges && x <= b.x0 + 6) return { zone: 'text', edge: 'start', item: b.t }
+        if (edges && x >= b.x1 - 6) return { zone: 'text', edge: 'end', item: b.t }
+        return { zone: 'text', edge: 'move', item: b.t }
+      }
+      return bars.length ? { zone: 'none' } : { zone: 'addtext' }
+    }
     if (y >= MUSIC_TOP - 3 && y <= MUSIC_TOP + MUSIC_H + 3) {
       if (p.music && song && x >= song.x0 - 4 && x <= song.x1 + 4) return { zone: 'music' }
       return p.music ? { zone: 'none' } : { zone: 'addmusic' }
@@ -109,6 +156,8 @@ export default function Timeline (props) {
     const { w: W, dpr } = size.current
     if (!c || !W) return
     const ctx = c.getContext('2d')
+    const HEIGHT = heightFor(live.current.texts)
+    if (c.height !== Math.round(HEIGHT * dpr)) c.height = Math.round(HEIGHT * dpr)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, W, HEIGHT)
 
@@ -278,11 +327,44 @@ export default function Timeline (props) {
       ctx.fillText('♪  Add sound', cx + 10, MUSIC_TOP + MUSIC_H / 2 + 0.5)
     }
 
+    // The text lane: amber for text, violet for captions.
+    const { bars } = layout()
+    for (const b of bars) {
+      if (b.x1 < -2 || b.x0 > W + 2) continue
+      const a = Math.max(b.x0 + 0.5, -4)
+      const e = Math.min(b.x1 - 0.5, W + 4)
+      const sel = b.t.id === p.selectedTextId
+      ctx.save()
+      ctx.beginPath()
+      ctx.roundRect(a, b.y, Math.max(2, e - a), TEXT_H, 5)
+      ctx.fillStyle = b.t.caption
+        ? (sel ? 'rgba(186, 150, 255, 0.6)' : 'rgba(186, 150, 255, 0.3)')
+        : (sel ? 'rgba(255, 193, 77, 0.62)' : 'rgba(255, 193, 77, 0.3)')
+      ctx.fill()
+      if (sel) {
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
+      ctx.clip()
+      ctx.font = FONT
+      ctx.textAlign = 'left'
+      ctx.fillStyle = '#fff'
+      ctx.fillText((b.t.caption ? '' : 'T  ') + b.t.text.replace(/\s+/g, ' '), Math.max(a, 0) + 6, b.y + TEXT_H / 2 + 0.5)
+      ctx.restore()
+    }
+    if (!bars.length) {
+      ctx.font = FONT
+      ctx.textAlign = 'left'
+      ctx.fillStyle = 'rgba(232, 234, 237, 0.34)'
+      ctx.fillText('T  Add text', cx + 10, TEXT_TOP + TEXT_H / 2 + 0.5)
+    }
+
     // The playhead, fixed in the middle.
     ctx.fillStyle = '#fff'
     ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
     ctx.shadowBlur = 4
-    ctx.fillRect(cx - 1, RULER - 2, 2, MUSIC_TOP + MUSIC_H + 4 - (RULER - 2))
+    ctx.fillRect(cx - 1, RULER - 2, 2, HEIGHT - 6 - (RULER - 2))
     ctx.beginPath()
     ctx.arc(cx, RULER - 2, 4, 0, Math.PI * 2)
     ctx.fill()
@@ -323,6 +405,11 @@ export default function Timeline (props) {
       p.onTrim({ id: hit.piece.id, edge: hit.edge, to: hit.piece[hit.edge], phase: 'start' })
       return
     }
+    if (hit.zone === 'text') {
+      drag.current = { mode: 'text', id: hit.item.id, edge: hit.edge, start: hit.item.start, end: hit.item.end, x0: e.clientX, moved: false }
+      p.onText({ id: hit.item.id, phase: 'start' })
+      return
+    }
     if (hit.zone === 'music') {
       drag.current = { mode: 'music', from: p.music.offset, x0: e.clientX }
       p.onMusic({ offset: p.music.offset, phase: 'start' })
@@ -338,13 +425,20 @@ export default function Timeline (props) {
       const { x, y } = pos(e)
       const hit = hitTest(x, y)
       e.currentTarget.style.cursor = hit.zone === 'handle' ? 'ew-resize'
-        : hit.zone === 'ruler' || hit.zone === 'addmusic' ? 'pointer'
-          : hit.zone === 'music' ? 'move' : 'grab'
+        : hit.zone === 'ruler' || hit.zone === 'addmusic' || hit.zone === 'addtext' ? 'pointer'
+          : hit.zone === 'music' ? 'move'
+            : hit.zone === 'text' ? (hit.edge === 'move' ? 'move' : 'ew-resize') : 'grab'
       return
     }
     const dx = e.clientX - d.x0
     if (d.mode === 'trim') {
       p.onTrim({ id: d.id, edge: d.edge, to: d.from + dx / p.pps, phase: 'move' })
+      return
+    }
+    if (d.mode === 'text') {
+      if (!d.moved && Math.abs(dx) < DRAG_SLOP) return
+      d.moved = true
+      p.onText({ id: d.id, ...textSpan(d, dx / p.pps), phase: 'move' })
       return
     }
     // Dragging the song right makes it start later, so less of it has played.
@@ -372,9 +466,16 @@ export default function Timeline (props) {
       p.onMusic({ offset: d.from - (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
       return
     }
+    if (d.mode === 'text') {
+      if (!d.moved) p.onText({ id: d.id, phase: 'click' })
+      else p.onText({ id: d.id, ...textSpan(d, (e.clientX - d.x0) / p.pps), phase: cancelled ? 'cancel' : 'end' })
+      return
+    }
     e.currentTarget.style.cursor = 'grab'
     if (d.mode !== 'pending' || cancelled) return
-    if (d.hit.zone === 'addmusic') {
+    if (d.hit.zone === 'addtext') {
+      p.onAddText?.()
+    } else if (d.hit.zone === 'addmusic') {
       p.onAddMusic?.()
     } else if (d.hit.zone === 'ruler') {
       p.onSeek(p.t + (d.x - size.current.w / 2) / p.pps)
@@ -390,7 +491,7 @@ export default function Timeline (props) {
       <canvas
         ref={canvasRef}
         className="timeline__canvas"
-        style={{ height: HEIGHT }}
+        style={{ height: heightFor(props.texts) }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={(e) => finish(e, false)}

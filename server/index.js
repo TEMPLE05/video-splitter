@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { mountCaptions } from './captions.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -270,7 +271,9 @@ async function snapshot () {
 /* ---------------------------------------------------------------------- app */
 
 const app = express()
-app.use(express.json())
+// Exports carry the editor's text as pictures, which for a captioned
+// episode can run to a few megabytes.
+app.use(express.json({ limit: '64mb' }))
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
@@ -1259,6 +1262,12 @@ async function loadSubtitles (meta, file) {
   return tracks
 }
 
+/** Width and height from a PNG's header, or null if it is not a PNG. */
+function pngSize (buf) {
+  if (buf.length < 24 || buf.readUInt32BE(12) !== 0x49484452) return null
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+}
+
 const pieceLength = (p) => (p.kind === 'image' ? p.length : p.end - p.start)
 
 /**
@@ -1387,7 +1396,7 @@ const AFMT = 'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo
  * format, joined with concat, and the new soundtrack, if any, is laid under
  * the result starting at the right moment of the song.
  */
-async function render ({ file, meta, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps }) {
+async function render ({ file, meta, pieces, target, withOriginal, music, crop, canvas, background, at, tracks, temps, overlays, overlayBlank }) {
   const { W, H, padded } = frameSize(meta, crop, canvas)
   const fps = meta.fps.toFixed(3)
   const total = pieces.reduce((s, p) => s + pieceLength(p), 0)
@@ -1439,10 +1448,46 @@ async function render ({ file, meta, pieces, target, withOriginal, music, crop, 
     }
   }
 
+  // Text and captions, drawn by the editor as transparent full-frame pictures
+  // so the export matches the preview exactly. Each lane is a slideshow of
+  // non-overlapping pictures with transparent gaps, laid over the video; one
+  // lane holds every caption, however many there are.
+  let videoOut = '[vout]'
+  if (overlays && overlays.length) {
+    const lanes = []
+    for (const o of overlays) {
+      const lane = lanes.find((l) => l.end <= o.a + 0.001)
+      if (lane) { lane.items.push(o); lane.end = o.b } else lanes.push({ end: o.b, items: [o] })
+    }
+    if (lanes.length > 8) throw httpError(400, 'Too many texts on screen at the same moment; keep it to 8')
+    const q = (f) => `file '${f.replace(/\\/g, '/')}'`
+    lanes.forEach((lane, j) => {
+      const lines = ['ffconcat version 1.0']
+      let cursor = 0
+      for (const o of lane.items) {
+        if (o.a > cursor + 0.001) lines.push(q(overlayBlank.file), `duration ${(o.a - cursor).toFixed(4)}`)
+        lines.push(q(o.file), `duration ${(o.b - o.a).toFixed(4)}`)
+        cursor = o.b
+      }
+      lines.push(q(overlayBlank.file), `duration ${Math.max(0.05, total - cursor + 0.05).toFixed(4)}`)
+      // The last entry's duration is ignored by the concat reader, so the
+      // blank is listed once more to close the lane.
+      lines.push(q(overlayBlank.file))
+      const list = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.txt`)
+      fs.writeFileSync(list, lines.join('\n'))
+      temps.push(list)
+      args.push('-f', 'concat', '-safe', '0', '-i', list)
+      graph.push(`[${next}:v]fps=${fps},scale=${W}:${H},format=rgba,setpts=PTS-STARTPTS[L${j}]`)
+      graph.push(`${videoOut}[L${j}]overlay=0:0:eof_action=pass[o${j}]`)
+      videoOut = `[o${j}]`
+      next += 1
+    })
+  }
+
   const subs = await writeSubtitles(tracks, pieces)
   temps.push(...subs.map((s) => s.file))
   const sub = subtitleArgs(subs, next)
-  args.push(...sub.inputs, '-filter_complex', graph.join(';'), '-map', '[vout]')
+  args.push(...sub.inputs, '-filter_complex', graph.join(';'), '-map', videoOut)
   if (audioOut) args.push('-map', audioOut, '-c:a', 'aac', '-b:a', '192k')
   args.push(...sub.outputs, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart', target)
@@ -1493,7 +1538,9 @@ app.post('/api/export', wrap(async (req, res) => {
   const crop = cleanCrop(look.crop)
   const canvas = ASPECTS[look.canvas] ? look.canvas : 'original'
   const background = look.background === 'black' ? 'black' : 'blur'
-  const plain = !music && !crop && canvas === 'original' && clean.every((p) => p.kind === 'video')
+  const texts = Array.isArray(body.overlays) ? body.overlays : []
+  if (texts.length > 3000) throw httpError(400, 'Too many texts; keep it under 3000')
+  const plain = !music && !crop && canvas === 'original' && !texts.length && clean.every((p) => p.kind === 'video')
   const fast = body.mode === 'fast' && !body.join && plain
 
   const outDir = path.join(path.dirname(file), 'edits')
@@ -1511,14 +1558,44 @@ app.post('/api/export', wrap(async (req, res) => {
   const sizeOf = async (f) => {
     try { return (await fsp.stat(f)).size } catch { return 0 }
   }
-  const common = { file, meta, withOriginal, music, crop, canvas, background, tracks, temps }
+  // Text pictures go to temporary files once; each part takes its own slice.
+  const overlays = []
+  let overlayBlank = null
+  for (const o of texts) {
+    const m = /^data:image\/png;base64,(.+)$/.exec(String(o && o.png))
+    const a = Number(o && o.start)
+    const b = Number(o && o.end)
+    if (!m || !(b > a) || a < 0) throw httpError(400, 'A text in the edit could not be read')
+    const buf = Buffer.from(m[1], 'base64')
+    const size = pngSize(buf)
+    if (!size) throw httpError(400, 'A text in the edit could not be read')
+    if (overlayBlank && (size.w !== overlayBlank.w || size.h !== overlayBlank.h)) throw httpError(400, 'Texts were drawn at different sizes')
+    if (!overlayBlank) overlayBlank = { ...size }
+    const f = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+    temps.push(f)
+    await fsp.writeFile(f, buf)
+    overlays.push({ a, b, file: f })
+  }
+  overlays.sort((x, y) => x.a - y.a)
+  if (overlayBlank) {
+    overlayBlank.file = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+    temps.push(overlayBlank.file)
+    const r = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+      '-i', `color=c=black@0:s=${overlayBlank.w}x${overlayBlank.h},format=rgba`, '-frames:v', '1', overlayBlank.file])
+    if (r.code !== 0) throw httpError(500, 'Could not prepare the text layer')
+  }
+  const slice = (at, len) => overlays
+    .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
+    .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
+
+  const common = { file, meta, withOriginal, music, crop, canvas, background, tracks, temps, overlayBlank }
 
   try {
     // One finished video: every piece, in order, gaps closed. Always
     // re-encoded, since joining stream-copied pieces glitches at every cut.
     if (body.join) {
       const target = await reservePath(path.join(outDir, stem + ' edit.mp4'))
-      const r = await render({ ...common, pieces: clean, target, at: 0 })
+      const r = await render({ ...common, pieces: clean, target, at: 0, overlays: slice(0, clean.reduce((t, p) => t + pieceLength(p), 0)) })
       if (r.code !== 0) await fail(target, r.stderr)
       res.json({
         written: [{ name: path.basename(target), size: await sizeOf(target) }],
@@ -1563,7 +1640,7 @@ app.post('/api/export', wrap(async (req, res) => {
         if (r.code !== 0) await fail(target, r.stderr, finished)
         Object.assign(entry, { asked: piece.start, startedAt: Math.round(from * 1000) / 1000 })
       } else {
-        const r = await render({ ...common, pieces: [piece], target, at })
+        const r = await render({ ...common, pieces: [piece], target, at, overlays: slice(at, pieceLength(piece)) })
         if (r.code !== 0) await fail(target, r.stderr, finished)
         subtitles = Math.max(subtitles, r.subtitles)
       }
@@ -1683,6 +1760,8 @@ app.post('/api/bucket/:id/audio', wrap(async (req, res) => {
 }))
 
 /* ----------------------------------------------------- static build, if any */
+
+mountCaptions(app, { ROOT, CACHE_DIR, wrap, httpError, resolveInSource, decodeId, probe, haveTools })
 
 const DIST = path.join(ROOT, 'dist')
 if (fs.existsSync(DIST)) {

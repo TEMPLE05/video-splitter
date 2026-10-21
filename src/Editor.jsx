@@ -1,17 +1,23 @@
+import { newId } from './editor/model.js'
 import { useEffect, useRef, useState } from 'react'
 import Timeline from './editor/Timeline.jsx'
 import Stage, { ASPECTS } from './editor/Stage.jsx'
+import { frameSize } from './editor/frame.js'
+import {
+  CAPTION_LOOK, COLORS, FONTS, SIZE_MAX, SIZE_MIN, STYLES, captionChunks, drawText, newText
+} from './editor/text.js'
 import usePlayback from './editor/usePlayback.js'
 import {
   formatClock, imagePiece, initial, insertAfter, isImage, offsets as offsetsOf, parseClock, removePiece, splitAt,
   splitEvenly, total as totalOf, trimPiece
 } from './editor/model.js'
 import {
-  Aspect, Back, Check, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors, Timer,
-  Trash, Undo, VolumeOff, VolumeOn
+  Aspect, Back, Captions, Check, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
+  TextIcon, Timer, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
 import {
-  exportCuts, getStrip, getWave, listMedia, probeVideo, pullAudio, uploadMedia, videoUrl
+  captionsStatus, exportCuts, getStrip, getWave, installCaptions, listMedia, probeVideo, pullAudio, transcribe,
+  uploadMedia, videoUrl
 } from './api.js'
 
 const MIN_PIECE = 0.1
@@ -57,6 +63,10 @@ export default function Editor ({ video, bucket, onBack }) {
   const [musicDraft, setMusicDraft] = useState(null)
   const lookDraftRef = useRef(null)
   const [selectedId, setSelectedId] = useState(null)
+  const [selectedTextId, setSelectedTextId] = useState(null)
+  const [textDraft, setTextDraft] = useState(null)
+  // Only a text just added takes the keyboard; one brought back by redo must not.
+  const [freshTextId, setFreshTextId] = useState(null)
 
   const [strip, setStrip] = useState(null)
   const [stripImg, setStripImg] = useState(null)
@@ -81,6 +91,8 @@ export default function Editor ({ video, bucket, onBack }) {
   const pieces = draft ?? edit?.pieces ?? []
   const look = lookDraft ?? edit?.look ?? PLAIN_LOOK
   const music = edit?.music ? { ...edit.music, ...(musicDraft || {}) } : null
+  const texts = textDraft ?? edit?.texts ?? []
+  const selectedText = texts.find((x) => x.id === selectedTextId) || null
   const total = totalOf(pieces)
   const fps = info?.fps || 30
   const frame = 1 / fps
@@ -100,7 +112,7 @@ export default function Editor ({ video, bucket, onBack }) {
         if (!d.hasVideo) throw new Error('This file has no picture to edit.')
         if (!(d.duration > 0)) throw new Error('Could not read how long this clip is.')
         setInfo(d)
-        setHist({ past: [], present: { pieces: initial(d.duration), music: null, look: PLAIN_LOOK }, future: [] })
+        setHist({ past: [], present: { pieces: initial(d.duration), music: null, look: PLAIN_LOOK, texts: [] }, future: [] })
       })
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
 
@@ -156,8 +168,13 @@ export default function Editor ({ video, bucket, onBack }) {
 
   /* ------------------------------------------------------------ history */
 
-  function commitEdit (patch) {
-    setHist((h) => ({ past: [...h.past, h.present].slice(-HISTORY), present: { ...h.present, ...patch }, future: [] }))
+  // A key folds a run of small changes (typing, a slider) into one undo step.
+  function commitEdit (patch, key) {
+    setHist((h) => {
+      const at = Date.now()
+      if (key && h.key === key && at - h.at < 1500) return { ...h, present: { ...h.present, ...patch }, at }
+      return { past: [...h.past, h.present].slice(-HISTORY), present: { ...h.present, ...patch }, future: [], key, at }
+    })
   }
 
   function commit (next) {
@@ -342,6 +359,91 @@ export default function Editor ({ video, bucket, onBack }) {
     flash(`Added ${media.name} for ${seconds} s. Drag its white handles to change how long it shows.`)
   }
 
+  /* -------------------------------------------------------------- text */
+
+  const selectPiece = (id) => { setSelectedId(id); if (id) { setSelectedTextId(null); setNote(null) } }
+  const selectText = (id) => {
+    setSelectedTextId(id)
+    if (id) { setSelectedId(null); setNote(null); setPanel('text') } else if (panel === 'text') setPanel(null)
+  }
+
+  function addText () {
+    if (!hist) return
+    pb.pause()
+    const T = pb.now()
+    const len = Math.min(3, total)
+    const start = Math.max(0, Math.min(T, total - len))
+    const item = newText(start, start + len)
+    commitEdit({ texts: [...texts, item] })
+    setFreshTextId(item.id)
+    if (T < start || T >= start + len) pb.seek(start)
+    selectText(item.id)
+  }
+
+  function updateText (id, patch, key) {
+    commitEdit({ texts: (edit.texts || []).map((x) => (x.id === id ? { ...x, ...patch } : x)) }, key)
+  }
+
+  function deleteText (id) {
+    commitEdit({ texts: (edit.texts || []).filter((x) => x.id !== id) })
+    selectText(null)
+  }
+
+  // Timeline bars: slide or stretch when it shows.
+  const textBase = useRef(null)
+  function onText ({ id, start, end, phase }) {
+    if (phase === 'start') { pb.pause(); textBase.current = edit.texts; return }
+    if (phase === 'click') { selectText(id === selectedTextId ? null : id); textBase.current = null; return }
+    const base = textBase.current
+    if (!base) return
+    const fit = (x) => {
+      const len = x.end - x.start
+      let a = Math.min(start, Math.max(0, total - Math.min(len, total)))
+      let b = Math.min(end, total)
+      if (b - a < 0.2) { a = Math.max(0, b - 0.2); b = a + 0.2 }
+      return { ...x, start: a, end: b }
+    }
+    const next = base.map((x) => (x.id === id ? fit(x) : x))
+    if (phase === 'move') { setTextDraft(next); return }
+    textBase.current = null
+    setTextDraft(null)
+    if (phase === 'end') { commitEdit({ texts: next }); selectText(id) }
+  }
+
+  // Dragging a text on the picture.
+  const moveRef = useRef(null)
+  function onMoveText (id, x, y, phase) {
+    if (phase === 'move') {
+      const next = (moveRef.current ?? edit.texts).map((t) => (t.id === id ? { ...t, x, y } : t))
+      moveRef.current = next
+      setTextDraft(next)
+      return
+    }
+    const done = moveRef.current
+    moveRef.current = null
+    setTextDraft(null)
+    if (done) commitEdit({ texts: done })
+  }
+
+  /** The style of one caption, copied to every caption. */
+  function styleAllCaptions (from) {
+    const look = { x: from.x, y: from.y, size: from.size, font: from.font, style: from.style, color: from.color }
+    commitEdit({ texts: edit.texts.map((x) => (x.caption ? { ...x, ...look } : x)) })
+    flash('Every caption now looks like this one')
+  }
+
+  function setCaptions (words) {
+    const chunks = captionChunks(words).filter((c) => c.start < total)
+    const keep = (edit.texts || []).filter((x) => !x.caption)
+    const made = chunks.map((c) => ({ id: newId(), caption: true, text: c.text, start: c.start, end: Math.min(c.end, total), ...CAPTION_LOOK }))
+    commitEdit({ texts: [...keep, ...made] })
+    setSheet(null)
+    selectText(null)
+    flash(made.length
+      ? `Added ${made.length} captions. Click one to fix a word or change the style.`
+      : 'No speech was found in this edit')
+  }
+
   /* -------------------------------------------------------------- keys */
 
   useEffect(() => {
@@ -366,7 +468,7 @@ export default function Editor ({ video, bucket, onBack }) {
         case 'Space': e.preventDefault(); pb.toggle(); break
         case 'KeyS': e.preventDefault(); split(); break
         case 'Delete':
-        case 'Backspace': e.preventDefault(); deleteSelected(); break
+        case 'Backspace': e.preventDefault(); selectedTextId ? deleteText(selectedTextId) : deleteSelected(); break
         case 'ArrowLeft': e.preventDefault(); pb.seek(clampT(pb.now() - (e.shiftKey ? 1 : frame))); break
         case 'ArrowRight': e.preventDefault(); pb.seek(clampT(pb.now() + (e.shiftKey ? 1 : frame))); break
         case 'Home': e.preventDefault(); pb.seek(0); break
@@ -377,7 +479,9 @@ export default function Editor ({ video, bucket, onBack }) {
         case 'NumpadSubtract': zoomBy(1 / 1.5); break
         case 'KeyM': setPreviewMuted((m) => !m); break
         case 'Escape':
-          if (panel) setPanel(null)
+          if (panel === 'text') selectText(null)
+          else if (panel) setPanel(null)
+          else if (selectedTextId) selectText(null)
           else if (selectedId) setSelectedId(null)
           else onBack()
           break
@@ -410,12 +514,13 @@ export default function Editor ({ video, bucket, onBack }) {
 
   let status = ''
   if (note) status = note
+  else if (selectedText) status = `${selectedText.caption ? 'Caption' : 'Text'} · ${formatClock(selectedText.start, true)} to ${formatClock(selectedText.end, true)} · drag it on the picture to move it`
   else if (selected && isImage(selected)) status = `Picture · shows for ${formatClock(selected.end - selected.start, true)} · drag the white handles to change`
   else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim`
   else if (pieces.length > 1) status = `${pieces.length} pieces`
 
   return (
-    <div className="editor" data-pieces={pieces.length}>
+    <div className="editor" data-pieces={pieces.length} data-texts={texts.length}>
       <header className="libbar">
         <div className="libbar__left">
           <button className="ctl" onClick={onBack} title="Back to library (Esc)" aria-label="Back">
@@ -448,6 +553,10 @@ export default function Editor ({ video, bucket, onBack }) {
         stillUrl={pb.still ? videoUrl(pb.still) : undefined}
         onClick={() => hist && pb.toggle()}
         loading={!hist}
+        texts={texts}
+        selectedTextId={selectedTextId}
+        onSelectText={selectText}
+        onMoveText={onMoveText}
       />
       {/* The added song plays from here, kept in step by the playback engine. */}
       <audio ref={pb.audioRef} src={music ? videoUrl(music.id) : undefined} preload="auto" />
@@ -493,7 +602,11 @@ export default function Editor ({ video, bucket, onBack }) {
         selectedId={selectedId}
         onWidth={setWidth}
         onSeek={(T) => pb.seek(clampT(T))}
-        onSelect={(id) => { setSelectedId(id); if (id) setNote(null) }}
+        onSelect={selectPiece}
+        texts={texts}
+        selectedTextId={selectedTextId}
+        onText={onText}
+        onAddText={addText}
         onTrim={onTrim}
         onZoom={zoomBy}
         onMusic={onMusic}
@@ -537,6 +650,20 @@ export default function Editor ({ video, bucket, onBack }) {
           <button className="ed__go" onClick={() => setPanel(null)}>Done</button>
         </div>
       ) : null}
+      {panel === 'text' && selectedText ? (
+        <TextPanel
+          key={selectedText.id}
+          item={selectedText}
+          fresh={freshTextId === selectedText.id}
+          onUndo={undo}
+          onRedo={redo}
+          captions={texts.filter((x) => x.caption).length}
+          onChange={(patch, key) => updateText(selectedText.id, patch, key)}
+          onStyleAll={() => styleAllCaptions(selectedText)}
+          onDelete={() => deleteText(selectedText.id)}
+          onClose={() => selectText(null)}
+        />
+      ) : null}
       {panel === 'sound' && music ? (
         <SoundPanel
           music={music}
@@ -561,6 +688,15 @@ export default function Editor ({ video, bucket, onBack }) {
         <span className="ed__tools-sep" />
         <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist} />
         <Tool icon={<Aspect />} label="Canvas" onClick={() => togglePanel('canvas')} on={panel === 'canvas' || look.canvas !== 'original'} disabled={!hist} />
+        <Tool icon={<TextIcon />} label="Text" onClick={addText} disabled={!hist} />
+        <Tool
+          icon={<Captions />}
+          label="Captions"
+          onClick={() => { pb.pause(); setSheet('captions') }}
+          on={texts.some((x) => x.caption)}
+          disabled={!info || !info.hasAudio}
+          title={info && !info.hasAudio ? 'This clip has no sound to caption' : 'Auto captions from the speech'}
+        />
         <Tool icon={<Photo />} label="Add picture" onClick={() => { pb.pause(); setSheet('image-pick') }} disabled={!hist} />
         <span className="ed__tools-sep" />
         <Tool
@@ -592,8 +728,19 @@ export default function Editor ({ video, bucket, onBack }) {
           onSoundOff={setSoundOff}
           music={edit.music}
           look={edit.look}
+          texts={edit.texts}
+          info={info}
           mode={outMode}
           onMode={setOutMode}
+          onClose={() => setSheet(null)}
+        />
+      ) : null}
+      {sheet === 'captions' ? (
+        <CaptionsSheet
+          video={video}
+          pieces={pieces}
+          existing={texts.filter((x) => x.caption).length}
+          onWords={setCaptions}
           onClose={() => setSheet(null)}
         />
       ) : null}
@@ -846,22 +993,59 @@ function Written ({ result }) {
   )
 }
 
-function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, music, look, mode, onMode, onClose }) {
+/**
+ * Each text drawn onto its own transparent full-size frame, with the same
+ * code the preview uses, for the server to lay over the video. Chrome encodes
+ * PNGs off the main thread, so several go at once.
+ */
+async function textPictures (texts, info, look, total, onProgress) {
+  const { W, H } = frameSize(info, look)
+  const items = texts.filter((t) => t.start < total && t.text.trim())
+  const out = new Array(items.length)
+  let done = 0
+  const one = async (i) => {
+    const t = items[i]
+    const c = document.createElement('canvas')
+    c.width = W
+    c.height = H
+    drawText(c.getContext('2d'), t, W, H)
+    const blob = await new Promise((resolve) => c.toBlob(resolve, 'image/png'))
+    const png = await new Promise((resolve) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result)
+      r.readAsDataURL(blob)
+    })
+    out[i] = { start: t.start, end: Math.min(t.end, total), png }
+    onProgress(++done, items.length)
+  }
+  for (let i = 0; i < items.length; i += 8) {
+    await Promise.all(items.slice(i, i + 8).map((_, k) => one(i + k)))
+  }
+  return out
+}
+
+function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, music, look, texts, info, mode, onMode, onClose }) {
   const [fast, setFast] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [stage, setStage] = useState(null)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
   useEscape(onClose, busy)
 
   // A stream copy cannot crop, fill, add pictures or mix in a song.
-  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some(isImage)
+  const plain = !music && !look.crop && look.canvas === 'original' && !pieces.some(isImage) && !(texts || []).length
 
   async function go () {
     setBusy(true)
     setError(null)
     setResult(null)
     try {
+      const overlays = texts && texts.length
+        ? await textPictures(texts, info, look, total, (n, of) => setStage(`Preparing text ${n} of ${of}…`))
+        : []
+      setStage(null)
       setResult(await exportCuts({
+        overlays,
         id: video.id,
         segments: pieces.map((p) => (isImage(p)
           ? { kind: 'image', image: p.image, length: p.end - p.start }
@@ -876,6 +1060,7 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
       setError(err.message)
     } finally {
       setBusy(false)
+      setStage(null)
     }
   }
 
@@ -883,7 +1068,9 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
   const extras = [
     look.crop ? 'cropped' : null,
     look.canvas !== 'original' ? `${look.canvas} with a ${look.background === 'black' ? 'black' : 'blurred'} fill` : null,
-    music ? `♪ ${music.name}` : null
+    music ? `♪ ${music.name}` : null,
+    texts && texts.some((x) => x.caption) ? 'captions' : null,
+    texts && texts.some((x) => !x.caption) ? `${texts.filter((x) => !x.caption).length} text${texts.filter((x) => !x.caption).length === 1 ? '' : 's'}` : null
   ].filter(Boolean)
 
   return (
@@ -944,7 +1131,7 @@ function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoun
           <button className="pill" onClick={onClose} disabled={busy}>{result ? 'Done' : 'Cancel'}</button>
           <button className="pill pill--solid" onClick={go} disabled={busy}>
             <Download size={16} />
-            {busy ? 'Exporting…' : result ? 'Export again' : mode === 'join' ? 'Export video' : `Export ${n} file${n === 1 ? '' : 's'}`}
+            {busy ? (stage || 'Exporting…') : result ? 'Export again' : mode === 'join' ? 'Export video' : `Export ${n} file${n === 1 ? '' : 's'}`}
           </button>
         </div>
       </div>
@@ -994,6 +1181,209 @@ function AudioSheet ({ video, bucket, onClose }) {
         {result ? <Written result={result} /> : null}
         <div className="sheet__actions">
           <button className="pill" onClick={onClose} disabled={busy}>{result ? 'Done' : 'Close'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TextPanel ({ item, fresh, captions, onChange, onStyleAll, onDelete, onClose, onUndo, onRedo }) {
+  return (
+    <div className="ed__panel ed__panel--text">
+      <textarea
+        className="ed__textin"
+        value={item.text}
+        rows={2}
+        onChange={(e) => onChange({ text: e.target.value }, 'text:' + item.id)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { e.preventDefault(); onClose() }
+          // The edit's own undo, so the words and everything else stay in step.
+          const ctrl = e.ctrlKey || e.metaKey
+          if (ctrl && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? onRedo() : onUndo() }
+          if (ctrl && e.code === 'KeyY') { e.preventDefault(); onRedo() }
+        }}
+        autoFocus={fresh}
+        onFocus={(e) => { if (fresh && item.text === 'Your text') e.target.select() }}
+        aria-label="Text"
+        spellCheck
+      />
+      <div className="ed__textrow">
+        {Object.entries(FONTS).map(([k, f]) => (
+          <Choice key={k} on={item.font === k} onClick={() => onChange({ font: k })}>
+            <span style={{ font: f.css(13) }}>{f.label}</span>
+          </Choice>
+        ))}
+        <span className="ed__panel-sep" />
+        {Object.entries(STYLES).map(([k, label]) => (
+          <Choice key={k} on={item.style === k} onClick={() => onChange({ style: k })}>{label}</Choice>
+        ))}
+      </div>
+      <div className="ed__textrow">
+        {COLORS.map((c) => (
+          <button
+            key={c}
+            className={'swatch' + (item.color === c ? ' is-on' : '')}
+            style={{ background: c }}
+            onClick={() => onChange({ color: c })}
+            aria-label={'Colour ' + c}
+          />
+        ))}
+        <label className="ed__panel-hint ed__vol">
+          Size
+          <input
+            type="range"
+            min={SIZE_MIN * 1000}
+            max={SIZE_MAX * 1000}
+            value={Math.round(item.size * 1000)}
+            onChange={(e) => onChange({ size: Number(e.target.value) / 1000 }, 'size:' + item.id)}
+            aria-label="Text size"
+          />
+        </label>
+        <span className="ed__grow" />
+        {item.caption && captions > 1 ? <button className="ed__ghost" onClick={onStyleAll}>Use this style for all {captions} captions</button> : null}
+        <button className="ed__ghost ed__ghost--bad" onClick={onDelete}>Delete</button>
+        <button className="ed__go" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Captions from the speech in the edit, worked out on this computer. The
+ * first time, it offers the one-off download of the program and its language
+ * model; after that it just listens and returns timed words.
+ */
+function CaptionsSheet ({ video, pieces, existing, onWords, onClose }) {
+  const [st, setSt] = useState(null)
+  const [model, setModel] = useState('base')
+  const [phase, setPhase] = useState('idle')
+  const [progress, setProgress] = useState(0)
+  const [error, setError] = useState(null)
+  const alive = useRef(true)
+  useEscape(onClose, false)
+
+  useEffect(() => {
+    alive.current = true
+    captionsStatus()
+      .then((s) => {
+        if (!alive.current) return
+        setSt(s)
+        if (s.models.small.ready && !s.models.base.ready) setModel('small')
+        if (s.install && !s.install.error && !(s.program && s.models[s.install.model]?.ready)) {
+          setModel(s.install.model)
+          setPhase('installing')
+          watchInstall(s.install.model)
+        }
+      })
+      .catch((err) => setError(err.message))
+    return () => { alive.current = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+  const ready = st && st.program && st.models[model]?.ready
+
+  async function watchInstall (key) {
+    for (;;) {
+      await wait(500)
+      if (!alive.current) return false
+      const s = await captionsStatus()
+      setSt(s)
+      if (s.install?.error) { setError(s.install.error); setPhase('idle'); return false }
+      if (s.program && s.models[key].ready) return true
+    }
+  }
+
+  async function go () {
+    setError(null)
+    try {
+      if (!ready) {
+        setPhase('installing')
+        setSt(await installCaptions(model))
+        if (!(await watchInstall(model))) return
+      }
+      setPhase('listening')
+      setProgress(0)
+      const payload = {
+        id: video.id,
+        model,
+        segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { start: p.start, end: p.end }))
+      }
+      for (;;) {
+        const r = await transcribe(payload)
+        if (!alive.current) return
+        if (r.state === 'done') { onWords(r.words); return }
+        if (r.state === 'error') throw new Error(r.error)
+        setProgress(r.progress || 0)
+        await wait(400)
+      }
+    } catch (err) {
+      if (alive.current) { setError(err.message); setPhase('idle') }
+    }
+  }
+
+  const mb = (n) => Math.round(n / 1048576) + ' MB'
+  const inst = st?.install
+  const working = phase !== 'idle'
+
+  return (
+    <div className="sheetwrap" onClick={() => !working && onClose()}>
+      <div className="sheet sheet--wide" onClick={(e) => e.stopPropagation()}>
+        <h2 className="sheet__title">Auto captions</h2>
+        <p className="sheet__body">
+          Listens to the speech in your edit and writes it out, timed word by word, all on this
+          computer. Make your cuts first: captions follow the edit as it is now.
+          {existing ? ` This replaces the ${existing} captions already there.` : ''}
+        </p>
+
+        {st && !st.supported ? (
+          <p className="sheet__error">Auto captions need whisper.cpp. Install it so that whisper-cli is on your PATH, then try again.</p>
+        ) : null}
+
+        {st && st.supported ? (
+          <div className="choices">
+            {Object.entries(st.models).map(([k, m]) => (
+              <button
+                key={k}
+                className={'choice' + (model === k ? ' is-on' : '')}
+                onClick={() => setModel(k)}
+                disabled={working}
+                aria-pressed={model === k}
+              >
+                <strong>{m.label}</strong>
+                <span>
+                  {k === 'base' ? 'Fast, good for clear speech. ' : 'Slower, copes better with music and accents. '}
+                  {m.ready ? 'Ready.' : `One-time download, ${mb(m.size)}.`}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {phase === 'installing' && inst ? (
+          <div className="progress">
+            <span className="progress__label">
+              {inst.phase === 'program' ? 'Downloading the program…' : inst.phase === 'model' ? 'Downloading the language model…' : 'Starting the download…'}
+              {inst.total ? ` ${mb(inst.received)} of ${mb(inst.total)}` : ''}
+            </span>
+            <span className="progress__bar"><span style={{ width: (inst.total ? (100 * inst.received) / inst.total : 2) + '%' }} /></span>
+          </div>
+        ) : null}
+        {phase === 'listening' ? (
+          <div className="progress">
+            <span className="progress__label">Listening… {Math.round(progress * 100)}%</span>
+            <span className="progress__bar"><span style={{ width: Math.max(2, progress * 100) + '%' }} /></span>
+          </div>
+        ) : null}
+
+        {error ? <p className="sheet__error">{error}</p> : null}
+
+        <div className="sheet__actions">
+          <button className="pill" onClick={onClose} disabled={working}>Cancel</button>
+          <button className="pill pill--solid" onClick={go} disabled={!st || !st.supported || working}>
+            <Captions size={16} />
+            {working ? 'Working…' : ready ? 'Make captions' : 'Download and make captions'}
+          </button>
         </div>
       </div>
     </div>

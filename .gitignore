@@ -2,3 +2,4 @@ node_modules/
 dist/
 videosplitter.config.json
 .cache/
+.tools/

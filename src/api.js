@@ -72,3 +72,11 @@ export const uploadMedia = (bucketId, kind, file) =>
     headers: { 'Content-Type': 'application/octet-stream' },
     body: file
   })
+
+// Auto captions, worked out on this computer.
+export const captionsStatus = () => request('/api/captions/status')
+
+export const installCaptions = (model) => request('/api/captions/install', json('POST', { model }))
+
+// Asked repeatedly while it works; answers with progress, then the words.
+export const transcribe = (payload) => request('/api/captions/transcribe', json('POST', payload))
