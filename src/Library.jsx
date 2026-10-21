@@ -63,6 +63,8 @@ function Card ({ video, onOpen }) {
             playsInline
           />
         ) : null}
+        {/* Clips you have started editing, so you can find them again. */}
+        {video.edited ? <span className="card__edited">Edited</span> : null}
         <span className="card__cut"><Scissors size={15} /></span>
       </span>
       <span className="card__name" title={video.name}>{video.name}</span>

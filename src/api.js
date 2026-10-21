@@ -80,3 +80,10 @@ export const installCaptions = (model) => request('/api/captions/install', json(
 
 // Asked repeatedly while it works; answers with progress, then the words.
 export const transcribe = (payload) => request('/api/captions/transcribe', json('POST', payload))
+
+// The edit saved for a clip, picked up again when it is reopened.
+export const loadEdit = (id) => request('/api/edit/' + encodeURIComponent(id))
+
+export const saveEdit = (id, edit, extra) => request('/api/edit/' + encodeURIComponent(id), json('PUT', { edit, extra }))
+
+export const forgetEdit = (id) => request('/api/edit/' + encodeURIComponent(id), { method: 'DELETE' })

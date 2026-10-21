@@ -12,8 +12,9 @@
  * what makes undo a matter of keeping old lists.
  */
 
-let seq = 0
-export const newId = () => `p${++seq}`
+// Random rather than counted: saved edits come back with their own ids, and a
+// counter restarting at 1 would hand out ones already in use.
+export const newId = () => 'p' + Math.random().toString(36).slice(2, 10)
 
 export const lengthOf = (p) => p.end - p.start
 

@@ -3,3 +3,4 @@ dist/
 videosplitter.config.json
 .cache/
 .tools/
+.edits/

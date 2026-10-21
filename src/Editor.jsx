@@ -14,7 +14,7 @@ import {
   Aspect, Back, Captions, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
   TextIcon, Timer, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
-import { getStrip, getWave, probeVideo, videoUrl } from './api.js'
+import { getStrip, getWave, loadEdit, probeVideo, saveEdit, videoUrl } from './api.js'
 
 const MIN_PIECE = 0.1
 const MAX_PPS = 400
@@ -24,6 +24,27 @@ const SHAPES = ['9:16', '1:1', '4:5', '16:9']
 
 /** A fingerprint of the cuts, to tell when captions were made for other cuts. */
 const cutsOf = (pieces) => pieces.map((p) => (isImage(p) ? 'i' + (p.end - p.start).toFixed(2) : (p.src || '') + p.start.toFixed(2) + '-' + p.end.toFixed(2))).join('|')
+
+const freshEdit = (duration) => ({ pieces: initial(duration), music: null, look: PLAIN_LOOK, texts: [] })
+
+/** True when an edit is still the untouched clip, so there is nothing to keep. */
+function isPristine (e, duration) {
+  const p = e.pieces
+  return p.length === 1 && !isImage(p[0]) && !p[0].src && p[0].start < 1e-3 && Math.abs(p[0].end - duration) < 1e-3 &&
+    !e.music && !(e.texts && e.texts.length) && !e.look.crop && e.look.canvas === 'original' &&
+    !e.fadeIn && !e.fadeOut && !(e.pieces[0].transition)
+}
+
+/** A saved edit made safe to open: pieces kept inside the clip as it is now. */
+function restoreEdit (saved, duration) {
+  const e = saved && saved.edit
+  if (!e || !Array.isArray(e.pieces)) return null
+  const pieces = e.pieces
+    .map((p) => (isImage(p) || p.src ? p : { ...p, start: Math.max(0, p.start), end: Math.min(duration, p.end) }))
+    .filter((p) => p.end - p.start >= 0.05)
+  if (!pieces.length) return null
+  return { ...freshEdit(duration), ...e, pieces, look: { ...PLAIN_LOOK, ...(e.look || {}) }, texts: e.texts || [] }
+}
 
 function decodePeaks (b64) {
   const bin = atob(b64)
@@ -83,6 +104,7 @@ export default function Editor ({ video, bucket, onBack }) {
   const [cropRatio, setCropRatio] = useState(null)
   const [sheet, setSheet] = useState(null)
   const [note, setNote] = useState(null)
+  const [savedAt, setSavedAt] = useState(null)
   const noteTimer = useRef(0)
   const trimBase = useRef(null)
 
@@ -111,7 +133,20 @@ export default function Editor ({ video, bucket, onBack }) {
         if (!d.hasVideo) throw new Error('This file has no picture to edit.')
         if (!(d.duration > 0)) throw new Error('Could not read how long this clip is.')
         setInfo(d)
-        setHist({ past: [], present: { pieces: initial(d.duration), music: null, look: PLAIN_LOOK, texts: [] }, future: [] })
+        // Picks up where you left off, if this clip was edited before.
+        return loadEdit(video.id).catch(() => null).then((saved) => {
+          if (cancelled) return
+          const back = restoreEdit(saved, d.duration)
+          setHist({ past: [], present: back || freshEdit(d.duration), future: [] })
+          if (back) {
+            if (saved.extra?.soundOff) setSoundOff(true)
+            if (saved.extra?.outMode) setOutMode(saved.extra.outMode)
+            setSavedAt(saved.savedAt)
+            flash(saved.sizeChanged
+              ? 'Picked up your saved edit, but this file has changed since, so check the cuts.'
+              : 'Picked up where you left off. Start over clears it, and Undo brings it back.')
+          }
+        })
       })
       .catch((err) => { if (!cancelled) setLoadError(err.message) })
 
@@ -158,6 +193,41 @@ export default function Editor ({ video, bucket, onBack }) {
       imagesRef.current[p.image] = img
     }
   }, [pieces])
+
+  const pendingSave = useRef(null)
+  useEffect(() => {
+    if (!hist || !info) return
+    const pristine = isPristine(hist.present, info.duration)
+    if (pristine && !savedAt) return
+    const job = { edit: hist.present, extra: { soundOff, outMode } }
+    pendingSave.current = job
+    const timer = setTimeout(() => {
+      pendingSave.current = null
+      saveEdit(video.id, job.edit, job.extra).then((r) => setSavedAt(r.savedAt)).catch(() => {})
+    }, 600)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hist?.present, soundOff, outMode, info])
+
+  useEffect(() => () => {
+    const job = pendingSave.current
+    if (job) {
+      // keepalive lets the save finish even as the editor closes.
+      fetch('/api/edit/' + encodeURIComponent(video.id), {
+        method: 'PUT', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(job)
+      }).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function startOver () {
+    pb.pause()
+    commitEdit(freshEdit(duration))
+    setSelectedId(null)
+    setSelectedTextId(null)
+    setPanel(null)
+    flash('Started over with the whole clip. Undo brings your edit back.')
+  }
 
   function flash (text) {
     setNote(text)
@@ -545,6 +615,10 @@ export default function Editor ({ video, bucket, onBack }) {
           <span className="libbar__crumb">{bucket.name}</span>
         </div>
         <div className="libbar__right">
+          {savedAt ? <span className="ed__saved" title={'Saved ' + new Date(savedAt).toLocaleString()}>Saved</span> : null}
+          {hist && info && !isPristine(hist.present, info.duration) ? (
+            <button className="ed__ghost" onClick={startOver} title="Back to the whole clip, untouched">Start over</button>
+          ) : null}
           <button className="ctl" onClick={undo} disabled={!hist?.past.length} title="Undo (Ctrl+Z)" aria-label="Undo">
             <Undo size={18} />
           </button>

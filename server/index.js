@@ -7,6 +7,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
+import { mountEdits } from './edits.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -813,6 +814,9 @@ async function probe (file) {
 
 // Videos inside one bucket. Ids encode the path relative to the source folder,
 // so the existing /api/video route streams them with no change.
+// Saved edits, so the library can mark clips you have worked on.
+const savedEdits = mountEdits(app, { ROOT, wrap, httpError, resolveInSource, decodeId })
+
 app.get('/api/bucket/:id', wrap(async (req, res) => {
   const bucket = config.buckets.find((b) => b.id === req.params.id)
   if (!bucket) throw httpError(404, 'Unknown bucket')
@@ -838,7 +842,8 @@ app.get('/api/bucket/:id', wrap(async (req, res) => {
         name: entry.name,
         size: st.size,
         ext,
-        playable: PLAYABLE_EXT.has(ext)
+        playable: PLAYABLE_EXT.has(ext),
+        edited: savedEdits.has(path.join(dir, entry.name))
       }
     } catch {
       return null
