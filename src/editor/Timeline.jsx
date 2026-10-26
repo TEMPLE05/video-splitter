@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatClock, isImage, lengthOf, offsets as offsetsOf, total as totalOf } from './model.js'
+import { formatClock, isImage, lengthOf, offsets as offsetsOf, rateAt, sourceAt, speedsOf, total as totalOf } from './model.js'
 
 /**
  * The CapCut timeline: the playhead stays in the middle and the edit slides
@@ -35,6 +35,13 @@ const HANDLE = 12
 const DRAG_SLOP = 4
 const STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
 const FONT = "11px Roboto, 'Segoe UI', sans-serif"
+const fmtSpeed = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(v < 1 ? 2 : 1).replace(/.?0+$/, ''))
+/** " · 2x", or " · 0.5-3x" for a ramp; nothing at normal speed. */
+const speedLabel = (piece) => {
+  const [a, b] = speedsOf(piece)
+  if (a === 1 && b === 1) return ''
+  return ' · ' + (a === b ? fmtSpeed(a) : fmtSpeed(a) + '→' + fmtSpeed(b)) + '×'
+}
 
 /**
  * Lanes, as CapCut has them: every text and every sound sits in a lane, one
@@ -292,7 +299,7 @@ export default function Timeline (props) {
         const from = Math.max(0, Math.floor((-a) / tileW))
         for (let k = from; a + k * tileW < Math.min(b, W); k++) {
           const tx = a + k * tileW
-          const src = Math.min(piece.start + (k * tileW + tileW / 2) / p.pps, piece.end)
+          const src = Math.min(sourceAt(piece, (k * tileW + tileW / 2) / p.pps), piece.end)
           const idx = lastAtOrBefore(strip.times, src)
           ctx.drawImage(
             stripImg,
@@ -315,9 +322,9 @@ export default function Timeline (props) {
         const mid = wy + WAVE_H / 2
         const rate = media.rate || 50
         for (let px = Math.max(a, 0); px < Math.min(b, W); px += 2) {
-          const s0 = piece.start + (px - a) / p.pps
+          const s0 = sourceAt(piece, (px - a) / p.pps)
           const i0 = Math.floor(s0 * rate)
-          const i1 = Math.min(Math.max(i0 + 1, Math.ceil((s0 + 2 / p.pps) * rate)), i0 + 800, peaks.length)
+          const i1 = Math.min(Math.max(i0 + 1, Math.ceil(sourceAt(piece, (px - a + 2) / p.pps) * rate)), i0 + 800, peaks.length)
           let peak = 0
           for (let i = i0; i < i1; i++) if (peaks[i] > peak) peak = peaks[i]
           const h = Math.max(1, (peak / 255) * (WAVE_H - 6))
@@ -331,7 +338,7 @@ export default function Timeline (props) {
 
       const selected = piece.id === p.selectedId
       if (w > 58) {
-        const label = lengthOf(piece).toFixed(1) + 's'
+        const label = lengthOf(piece).toFixed(1) + 's' + speedLabel(piece)
         const lx = a + (selected ? HANDLE + 5 : 5)
         ctx.font = FONT
         const tw = ctx.measureText(label).width + 10
@@ -462,9 +469,12 @@ export default function Timeline (props) {
       ctx.save()
       ctx.beginPath()
       ctx.roundRect(a, b.y, Math.max(2, e - a), TEXT_H, 5)
-      ctx.fillStyle = b.t.caption
-        ? (sel ? 'rgba(186, 150, 255, 0.6)' : 'rgba(186, 150, 255, 0.3)')
-        : (sel ? 'rgba(255, 193, 77, 0.62)' : 'rgba(255, 193, 77, 0.3)')
+      const blur = b.t.kind === 'blur'
+      ctx.fillStyle = blur
+        ? (sel ? 'rgba(120, 200, 230, 0.6)' : 'rgba(120, 200, 230, 0.3)')
+        : b.t.caption
+          ? (sel ? 'rgba(186, 150, 255, 0.6)' : 'rgba(186, 150, 255, 0.3)')
+          : (sel ? 'rgba(255, 193, 77, 0.62)' : 'rgba(255, 193, 77, 0.3)')
       ctx.fill()
       if (sel) {
         ctx.strokeStyle = '#fff'
@@ -475,7 +485,16 @@ export default function Timeline (props) {
       ctx.font = FONT
       ctx.textAlign = 'left'
       ctx.fillStyle = '#fff'
-      ctx.fillText((b.t.caption ? '' : 'T  ') + b.t.text.replace(/\s+/g, ' '), Math.max(a, 0) + 6, b.y + TEXT_H / 2 + 0.5)
+      ctx.fillText(blur ? '◍  Blur' : (b.t.caption ? '' : 'T  ') + b.t.text.replace(/\s+/g, ' '), Math.max(a, 0) + 6, b.y + TEXT_H / 2 + 0.5)
+      // A moving blur's marked spots, as small diamonds along its bar.
+      if (blur && b.t.moving && b.t.spots) {
+        ctx.fillStyle = '#fff'
+        for (const sp of b.t.spots) {
+          const x = b.x0 + sp.t * p.pps
+          const y = b.y + TEXT_H / 2
+          ctx.beginPath(); ctx.moveTo(x, y - 4); ctx.lineTo(x + 4, y); ctx.lineTo(x, y + 4); ctx.lineTo(x - 4, y); ctx.fill()
+        }
+      }
       ctx.restore()
     }
     if (!bars.length) {
@@ -563,7 +582,8 @@ export default function Timeline (props) {
     const hit = hitTest(x, y)
     e.currentTarget.setPointerCapture(e.pointerId)
     if (hit.zone === 'handle') {
-      drag.current = { mode: 'trim', id: hit.piece.id, edge: hit.edge, from: hit.piece[hit.edge], x0: e.clientX }
+      // A sped-up piece's edge moves through its footage at the speed there.
+      drag.current = { mode: 'trim', id: hit.piece.id, edge: hit.edge, from: hit.piece[hit.edge], rate: isImage(hit.piece) ? 1 : rateAt(hit.piece, hit.piece[hit.edge]), x0: e.clientX }
       p.onTrim({ id: hit.piece.id, edge: hit.edge, to: hit.piece[hit.edge], phase: 'start' })
       return
     }
@@ -600,7 +620,7 @@ export default function Timeline (props) {
     }
     const dx = e.clientX - d.x0
     if (d.mode === 'trim') {
-      p.onTrim({ id: d.id, edge: d.edge, to: d.from + dx / p.pps, phase: 'move' })
+      p.onTrim({ id: d.id, edge: d.edge, to: d.from + (dx / p.pps) * d.rate, phase: 'move' })
       return
     }
     if (d.mode === 'text') {
@@ -636,7 +656,7 @@ export default function Timeline (props) {
     if (!d) return
     const p = live.current
     if (d.mode === 'trim') {
-      p.onTrim({ id: d.id, edge: d.edge, to: d.from + (e.clientX - d.x0) / p.pps, phase: cancelled ? 'cancel' : 'end' })
+      p.onTrim({ id: d.id, edge: d.edge, to: d.from + ((e.clientX - d.x0) / p.pps) * d.rate, phase: cancelled ? 'cancel' : 'end' })
       return
     }
     if (d.mode === 'sound') {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { continuesFrom, isImage, lengthOf, locate, offsets, total, transitionWindows } from './model.js'
+import { continuesFrom, intoAt, isImage, lengthOf, locate, offsets, rateAt, sourceAt, total, transitionWindows } from './model.js'
 import { videoUrl } from '../api.js'
 
 /**
@@ -130,7 +130,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
     const mx = mixRef.current
     if (mx) {
       const B = L[mx.k]
-      if (B && mx.inLayer[0] === 'v') return offs[mx.k] + (el(Number(mx.inLayer[1])).currentTime - B.start)
+      if (B && mx.inLayer[0] === 'v') return offs[mx.k] + intoAt(B, el(Number(mx.inLayer[1])).currentTime)
       return mx.from + (performance.now() - mx.clock) / 1000
     }
     const i = Math.min(curRef.current, L.length - 1)
@@ -140,7 +140,32 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
     const s = showingVideo()
     const v = s === null ? null : el(s)
     if (!v) return tRef.current
-    return offs[i] + (v.currentTime - p.start)
+    return offs[i] + intoAt(p, v.currentTime)
+  }
+
+  /**
+   * Keeps each playing element at the speed of the footage it shows, which
+   * changes as it goes through a ramp, with the voice kept or let go high and
+   * low as the piece asks.
+   */
+  function setRate (k, p) {
+    const v = el(k)
+    if (!v || !p || isImage(p)) return
+    const r = Math.min(Math.max(rateAt(p, v.currentTime), 0.0625), 16)
+    if (Math.abs(v.playbackRate - r) > 0.004) v.playbackRate = r
+    const keep = p.pitch !== 'shift'
+    if (v.preservesPitch !== keep) v.preservesPitch = keep
+  }
+  function syncRates () {
+    const L = listRef.current
+    const mx = mixRef.current
+    if (mx) {
+      if (mx.outLayer[0] === 'v') setRate(Number(mx.outLayer[1]), L[mx.k - 1])
+      if (mx.inLayer[0] === 'v') setRate(Number(mx.inLayer[1]), L[mx.k])
+      return
+    }
+    const s = showingVideo()
+    if (s !== null) setRate(s, L[curRef.current])
   }
 
   const now = () => (playingRef.current ? Math.min(Math.max(timeNow(), 0), total(listRef.current)) : tRef.current)
@@ -184,7 +209,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
     let j = k
     while (j < L.length && (isImage(L[j]) || (continuesFrom(L, j, frame) && !W[j]))) j++
     if (j >= L.length) return
-    cue(freeEl(), srcOf(L[j]), L[j].start - (W[j] ? W[j].eB : 0))
+    cue(freeEl(), srcOf(L[j]), sourceAt(L[j], -(W[j] ? W[j].eB : 0)))
   }
 
   function stopLoop () {
@@ -217,9 +242,10 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
       prepare(j + 1)
       return
     }
-    if (s !== null && continuesFrom(L, j, frame)) return
+    if (s !== null && continuesFrom(L, j, frame)) { setRate(s, p); return }
     const e = freeEl()
     cue(e, srcOf(p), p.start)
+    setRate(e, p)
     playEl(e)
     if (s !== null) stopEl(s)
     setLayer('v' + e)
@@ -240,7 +266,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
       outLayer = 'still'
     } else {
       // When live, the outgoing video is already playing where it should be.
-      if (!live) cue(outEl, srcOf(A), A.start + (T - offs[k - 1]))
+      if (!live) cue(outEl, srcOf(A), sourceAt(A, T - offs[k - 1]))
       outLayer = 'v' + outEl
     }
     if (isImage(B)) {
@@ -248,7 +274,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
       inLayer = 'still2'
     } else {
       const e = outLayer[0] === 'v' ? 1 - outEl : freeEl()
-      cue(e, srcOf(B), B.start + (T - offs[k]))
+      cue(e, srcOf(B), sourceAt(B, T - offs[k]))
       inLayer = 'v' + e
     }
     const m = Math.min(1, Math.max(0, (T - w.from) / (w.to - w.from)))
@@ -320,7 +346,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
         const v = s === null ? null : el(s)
         const done = isImage(p)
           ? T >= offs[i] + lengthOf(p) - 1e-3
-          : !v || v.currentTime >= p.end - frame * 0.25 || v.ended
+          : !v || v.currentTime >= p.end - frame * 0.25 * rateAt(p, p.end) || v.ended
         if (done) {
           if (i >= L.length - 1) { pause(end); return }
           enter(i + 1)
@@ -329,6 +355,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
     }
 
     T = Math.min(Math.max(timeNow(), 0), end)
+    syncRates()
     syncSong(T)
     setTime(T)
     rafRef.current = requestAnimationFrame(tick)
@@ -371,6 +398,7 @@ export default function usePlayback (list, committed, fps, { videoMuted, musicMu
     playingRef.current = true
     setPlaying(true)
     setTime(T)
+    syncRates()
     const mx = mixRef.current
     if (mx) {
       if (mx.outLayer[0] === 'v') playEl(Number(mx.outLayer[1]), 1)

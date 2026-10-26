@@ -1,3 +1,4 @@
+import { cleanSpeed, playedLength, soundSpeed } from './speed.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -163,7 +164,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
   async function editAudio (file, pieces, out, sounds = [], clipSound = true) {
     const args = ['-hide_banner', '-loglevel', 'error', '-y']
     const graph = []
-    const total = pieces.reduce((t, p) => t + (p.kind === 'image' ? p.length : p.end - p.start), 0)
+    const total = pieces.reduce((t, p) => t + (p.kind === 'image' ? p.length : playedLength(p)), 0)
     pieces.forEach((p, i) => {
       if (p.kind === 'image') {
         graph.push(`[${i}:a]atrim=duration=${p.length},asetpts=PTS-STARTPTS[a${i}]`)
@@ -171,11 +172,14 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
         return
       }
       args.push('-ss', String(p.start), '-t', String(p.end - p.start), '-i', p.file || file)
+      // Heard at the piece's speed, so the words land where they play.
+      const len = playedLength(p)
       if (p.silent || !clipSound) {
-        graph.push(`anullsrc=r=16000:cl=mono,atrim=duration=${p.end - p.start}[a${i}]`)
+        graph.push(`anullsrc=r=16000:cl=mono,atrim=duration=${len}[a${i}]`)
         return
       }
-      graph.push(`[${i}:a:0]aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,apad,atrim=duration=${p.end - p.start},asetpts=PTS-STARTPTS[a${i}]`)
+      graph.push(soundSpeed(p, `[${i}:a:0]aformat=sample_fmts=s16:sample_rates=16000:channel_layouts=mono,`, `[as${i}]`, 0, 0, 16000, i))
+      graph.push(`[as${i}]apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
     })
     graph.push(`${pieces.map((_, i) => `[a${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[clip]`)
     const mixed = ['[clip]']
@@ -306,7 +310,8 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       const pm = metas.get(pfile)
       const start = Math.max(0, Number(p?.start) || 0)
       const end = Math.min(pm.duration || Number(p?.end), Number(p?.end))
-      if (end - start >= 0.05) pieces.push({ kind: 'video', file: pfile, silent: !pm.hasAudio, start, end })
+      const speed = cleanSpeed(p)
+      if (end - start >= 0.05) pieces.push({ kind: 'video', file: pfile, silent: !pm.hasAudio, start, end, ...(speed ? { speed } : {}) })
     }
     if (!pieces.length) throw httpError(400, 'Nothing to caption')
 

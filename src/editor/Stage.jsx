@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { ASPECTS } from './frame.js'
 import { drawText, layoutText } from './text.js'
+import { blurRadius, isBlur, maskRect, maskUrl, spotAt } from './blur.js'
 import { videoUrl } from '../api.js'
 
 export { ASPECTS }
@@ -42,7 +43,7 @@ function effect (type, m, side) {
  *
  * In crop mode the whole uncropped frame shows, with the crop box over it.
  */
-export default function Stage ({ info, clips, mainId, look, cropping, cropRatio, onCrop, pb, onClick, loading, texts, selectedTextId, onSelectText, onMoveText }) {
+export default function Stage ({ info, clips, mainId, look, cropping, cropRatio, onCrop, pb, onClick, loading, texts, selectedTextId, onSelectText, onMoveText, blurTool, onDrawBlur, onMoveBlur }) {
   const boxRef = useRef(null)
   const bgRef = useRef(null)
   const dragRef = useRef(null)
@@ -208,9 +209,28 @@ export default function Stage ({ info, clips, mainId, look, cropping, cropRatio,
           </div>
         ) : null}
         {whiteFlash > 0 ? <div className="ed__flash" style={{ opacity: whiteFlash }} /> : null}
-        {!cropping && texts && texts.length ? (
+        {!cropping ? (texts || []).filter((x) => isBlur(x) && pb.t >= x.start - 1e-6 && pb.t < x.end).map((b) => {
+          // The browser's own backdrop blur, cut to the drawn shape by a mask
+          // stretched over wherever the area is at this moment.
+          const r = maskRect(spotAt(b, pb.t))
+          const url = `url(${maskUrl(b)})`
+          const px = (blurRadius(b.strength) * frame.h).toFixed(1) + 'px'
+          return (
+            <div
+              key={b.id}
+              className="ed__blur"
+              style={{
+                left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%',
+                backdropFilter: `blur(${px})`,
+                WebkitBackdropFilter: `blur(${px})`,
+                maskImage: url, WebkitMaskImage: url, maskSize: '100% 100%', WebkitMaskSize: '100% 100%'
+              }}
+            />
+          )
+        }) : null}
+        {!cropping && texts && texts.some((x) => !isBlur(x)) ? (
           <TextLayer
-            texts={texts}
+            texts={texts.filter((x) => !isBlur(x))}
             t={pb.t}
             width={frame.w}
             height={frame.h}
@@ -220,6 +240,9 @@ export default function Stage ({ info, clips, mainId, look, cropping, cropRatio,
           />
         ) : null}
 
+        {!cropping && blurTool ? (
+          <BlurTool tool={blurTool} t={pb.t} width={frame.w} height={frame.h} blur={(texts || []).find((x) => x.id === selectedTextId && isBlur(x))} onDraw={onDrawBlur} onMove={onMoveBlur} />
+        ) : null}
         {cropping ? (
           <div className="crop" onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
             <div
@@ -323,5 +346,142 @@ export function TextLayer ({ texts, t, width, height, selectedId, onSelect, onMo
       }}
       onClick={(e) => { if (clickedRef.current) e.stopPropagation() }}
     />
+  )
+}
+
+const BLUR_HANDLES = ['nw', 'ne', 'sw', 'se']
+const MIN_BLUR = 0.02
+
+/**
+ * Drawing and moving blurs on the picture. While drawing, a pencil paints
+ * over what to hide (or a box or an oval is dragged out); the selected blur
+ * shows its area with handles, to move it and size it at this moment.
+ */
+function BlurTool ({ tool, t, width, height, blur, onDraw, onMove }) {
+  const padRef = useRef(null)
+  const drawRef = useRef(null)
+  const dragRef = useRef(null)
+  const [live, setLive] = useState(null)
+  const drawing = tool.mode === 'draw'
+  const showing = blur && t >= blur.start - 1e-6 && t < blur.end
+
+  const at = (e) => {
+    const r = padRef.current.getBoundingClientRect()
+    return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)]
+  }
+
+  // The stroke or box being drawn, shown as a light wash until let go.
+  useEffect(() => {
+    const c = drawRef.current
+    if (!c || !width) return
+    c.width = Math.round(width)
+    c.height = Math.round(height)
+    const ctx = c.getContext('2d')
+    ctx.clearRect(0, 0, c.width, c.height)
+    if (!live) return
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)'
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+    if (live.pts) {
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.lineWidth = live.r * 2 * height
+      ctx.beginPath()
+      live.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * width, y * height) : ctx.moveTo(x * width, y * height)))
+      if (live.pts.length === 1) ctx.lineTo(live.pts[0][0] * width + 0.1, live.pts[0][1] * height)
+      ctx.stroke()
+    } else {
+      const x = Math.min(live.a[0], live.b[0]) * width
+      const y = Math.min(live.a[1], live.b[1]) * height
+      const w = Math.abs(live.b[0] - live.a[0]) * width
+      const h = Math.abs(live.b[1] - live.a[1]) * height
+      ctx.beginPath()
+      if (tool.shape === 'oval') ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2)
+      else ctx.rect(x, y, w, h)
+      ctx.fill()
+    }
+  }, [live, width, height, tool.shape])
+
+  function startMove (e, mode) {
+    e.stopPropagation()
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { mode, x0: e.clientX, y0: e.clientY, b0: spotAt(blur, t) }
+  }
+  function move (e) {
+    const d = dragRef.current
+    if (!d || !width) return
+    const dx = (e.clientX - d.x0) / width
+    const dy = (e.clientY - d.y0) / height
+    const b0 = d.b0
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi)
+    let next
+    if (d.mode === 'move') {
+      next = { x: clamp(b0.x + dx, -b0.w / 2, 1 - b0.w / 2), y: clamp(b0.y + dy, -b0.h / 2, 1 - b0.h / 2), w: b0.w, h: b0.h }
+    } else {
+      const sx = d.mode.includes('e') ? 1 : -1
+      const sy = d.mode.includes('s') ? 1 : -1
+      const ax = sx > 0 ? b0.x : b0.x + b0.w
+      const ay = sy > 0 ? b0.y : b0.y + b0.h
+      const w = Math.max(MIN_BLUR, b0.w + sx * dx)
+      const h = Math.max(MIN_BLUR, b0.h + sy * dy)
+      next = { x: sx > 0 ? ax : ax - w, y: sy > 0 ? ay : ay - h, w, h }
+    }
+    onMove(blur.id, next, 'move')
+  }
+  function endMove () {
+    if (!dragRef.current) return
+    dragRef.current = null
+    onMove(blur.id, null, 'end')
+  }
+
+  if (drawing) {
+    return (
+      <div
+        ref={padRef}
+        className={'blurpad blurpad--' + tool.shape}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          e.stopPropagation()
+          e.currentTarget.setPointerCapture(e.pointerId)
+          const p = at(e)
+          setLive(tool.shape === 'pencil' ? { r: tool.size, pts: [p] } : { a: p, b: p })
+        }}
+        onPointerMove={(e) => {
+          if (!live) return
+          const p = at(e)
+          if (live.pts) {
+            const last = live.pts[live.pts.length - 1]
+            if (Math.hypot((p[0] - last[0]) * width, (p[1] - last[1]) * height) >= 3) setLive({ ...live, pts: [...live.pts, p] })
+          } else setLive({ ...live, b: p })
+        }}
+        onPointerUp={() => {
+          const d = live
+          setLive(null)
+          if (!d) return
+          if (d.pts) { onDraw({ strokes: [{ r: d.r, pts: d.pts }] }); return }
+          const box = { x: Math.min(d.a[0], d.b[0]), y: Math.min(d.a[1], d.b[1]), w: Math.abs(d.b[0] - d.a[0]), h: Math.abs(d.b[1] - d.a[1]) }
+          // A click without a drag makes a box of a sensible size there.
+          if (box.w < MIN_BLUR || box.h < MIN_BLUR) onDraw({ box: { x: Math.max(0, d.a[0] - 0.1), y: Math.max(0, d.a[1] - 0.05), w: 0.2, h: 0.1 } })
+          else onDraw({ box })
+        }}
+      >
+        <canvas ref={drawRef} className="blurpad__ink" />
+      </div>
+    )
+  }
+  if (!showing) return null
+  const b = spotAt(blur, t)
+  return (
+    <div className="blurpad blurpad--edit" onPointerMove={move} onPointerUp={endMove} onPointerCancel={endMove}>
+      <div
+        className="blurbox"
+        style={{ left: b.x * 100 + '%', top: b.y * 100 + '%', width: b.w * 100 + '%', height: b.h * 100 + '%' }}
+        onPointerDown={(e) => startMove(e, 'move')}
+        onClick={(e) => e.stopPropagation()}
+        title="Drag to move the blur; drag a corner to size it"
+      >
+        {BLUR_HANDLES.map((h) => <span key={h} className={'crop__h crop__h--' + h} onPointerDown={(e) => startMove(e, h)} />)}
+      </div>
+    </div>
   )
 }

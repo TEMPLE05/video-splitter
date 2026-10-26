@@ -1972,3 +1972,20 @@ kbd {
 .card__cut { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0, 0, 0, 0.7); }
 .grid .cardbox { content-visibility: auto; contain-intrinsic-size: auto 330px; }
 .card__frame { contain: paint; }
+
+/* Blurs: the live blur over the picture, the drawing pad and the chosen blur's box. */
+.ed__blur { position: absolute; z-index: 5; pointer-events: none; }
+.blurpad { position: absolute; inset: 0; z-index: 7; touch-action: none; cursor: crosshair; }
+.blurpad--edit { pointer-events: none; cursor: default; }
+.blurpad__ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.blurbox {
+  position: absolute;
+  outline: 2px dashed rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  cursor: move;
+  pointer-events: auto;
+}
+.chip--spot { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px 0 10px; }
+.chip__go, .chip__x { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.chip__x { width: 20px; opacity: 0.6; }
+.chip__x:hover { opacity: 1; }

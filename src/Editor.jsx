@@ -8,16 +8,17 @@ import { loadFonts } from './editor/fonts.js'
 
 /** The look of one caption, to copy onto others or save in a look. */
 const captionStyleOf = (c) => ({ x: c.x, y: c.y, size: c.size, font: c.font, style: c.style, color: c.color, ...animsOf(c), hl: c.hl })
-import { Choice, PartsSplit, SoundPanel, TextPanel, Tool, TransitionPanel, TypedSplit } from './editor/panels.jsx'
+import { BlurPanel, Choice, PartsSplit, SoundPanel, SpeedPanel, TextPanel, Tool, TransitionPanel, TypedSplit } from './editor/panels.jsx'
+import { addStrokes, fitStrokes, isBlur, markSpot, newBlur, placeAt, removeSpot, spotAt } from './editor/blur.js'
 import { AudioSheet, CaptionsSheet, ClipSheet, ExportSheet, LooksSheet, MediaSheet } from './editor/sheets.jsx'
 import usePlayback from './editor/usePlayback.js'
 import {
-  formatClock, imagePiece, initial, insertAfter, isImage, offsets as offsetsOf, parseClock, removePiece, splitAt,
+  formatClock, imagePiece, initial, insertAfter, isImage, lengthOf, offsets as offsetsOf, parseClock, removePiece, speedsOf, splitAt,
   splitEvenly, total as totalOf, transitionWindows, trimPiece
 } from './editor/model.js'
 import {
   Aspect, Back, Captions, Crop, Download, Grid, Minus, Music, Pause, Photo, Play, Plus, Redo, Scissors,
-  Film, Sparkle, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
+  Film, Pencil, Speed, Sparkle, TextIcon, Timer, Transition, Trash, Undo, VolumeOff, VolumeOn
 } from './icons.jsx'
 import { getStrip, getWave, loadEdit, probeVideo, saveEdit, saveProject, videoUrl } from './api.js'
 import { lanesOf } from './editor/Timeline.jsx'
@@ -45,7 +46,12 @@ const PLAIN_LOOK = { crop: null, canvas: 'original', background: 'blur' }
 const SHAPES = ['9:16', '1:1', '4:5', '16:9']
 
 /** A fingerprint of the cuts, to tell when captions were made for other cuts. */
-const cutsOf = (pieces) => pieces.map((p) => (isImage(p) ? 'i' + (p.end - p.start).toFixed(2) : (p.src || '') + p.start.toFixed(2) + '-' + p.end.toFixed(2))).join('|')
+const cutsOf = (pieces) => pieces.map((p) => (isImage(p) ? 'i' + (p.end - p.start).toFixed(2) : (p.src || '') + p.start.toFixed(2) + '-' + p.end.toFixed(2) + speedMark(p))).join('|')
+// Only a changed speed adds to the fingerprint, so older edits stay as they were.
+const speedMark = (p) => {
+  const [a, b] = speedsOf(p)
+  return a === 1 && b === 1 ? '' : '@' + a + '-' + b + (p.pitch === 'shift' ? 'p' : '')
+}
 
 const freshEdit = (duration) => ({ pieces: initial(duration), sounds: [], look: PLAIN_LOOK, texts: [] })
 
@@ -66,7 +72,7 @@ function soundsOf (e, total) {
 /** True when an edit is still the untouched clip, so there is nothing to keep. */
 function isPristine (e, duration) {
   const p = e.pieces
-  return p.length === 1 && !isImage(p[0]) && !p[0].src && p[0].start < 1e-3 && Math.abs(p[0].end - duration) < 1e-3 &&
+  return p.length === 1 && !isImage(p[0]) && !p[0].src && p[0].start < 1e-3 && Math.abs(p[0].end - duration) < 1e-3 && !speedMark(p[0]) &&
     !(e.sounds && e.sounds.length) && !e.music && !(e.texts && e.texts.length) && !e.look.crop && e.look.canvas === 'original' &&
     !e.look.fadeIn && !e.look.fadeOut
 }
@@ -144,6 +150,8 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
   const [textDraft, setTextDraft] = useState(null)
   // Only a text just added takes the keyboard; one brought back by redo must not.
   const [freshTextId, setFreshTextId] = useState(null)
+  // How the next blur is drawn, and whether the pencil adds to the chosen one.
+  const [blurDraw, setBlurDraw] = useState({ shape: 'pencil', size: 0.04, more: false })
 
   // Every clip the edit uses: its details, and its frames and sound for the timeline.
   const [clips, setClips] = useState({})
@@ -453,7 +461,7 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
       // Pulling the left edge keeps the frames where they are and moves the
       // edge, so the handle stays under the pointer. Everything after a right
       // edge ripples along live.
-      if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
+      if (edge === 'start') pb.setTime(base.t - (lengthOf(before) - lengthOf(after)))
       if (!isImage(after)) pb.peek(after, edge === 'start' ? after.start : Math.max(after.start, after.end - frame))
       return
     }
@@ -464,7 +472,7 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
       pb.seek(base.t, base.list)
       return
     }
-    if (edge === 'start') pb.setTime(base.t - (after.start - before.start))
+    if (edge === 'start') pb.setTime(base.t - (lengthOf(before) - lengthOf(after)))
     commit(next)
   }
 
@@ -634,6 +642,12 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
 
   const selectPiece = (id) => { setSelectedId(id); if (id) { setSelectedTextId(null); setSelectedSoundId(null); if (panel === 'sound') setPanel(null); setNote(null) } }
   const selectText = (id) => {
+    const item = id && (edit?.texts || []).find((x) => x.id === id)
+    if (item && isBlur(item)) {
+      const T = pb.now()
+      if (T < item.start || T >= item.end) pb.seek(item.start)
+    }
+    setBlurDraw((d) => (d.more ? { ...d, more: false } : d))
     setSelectedTextId(id)
     if (id) { setSelectedId(null); setSelectedSoundId(null); setNote(null); setPanel('text') } else if (panel === 'text') setPanel(null)
   }
@@ -645,7 +659,7 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
     const len = Math.min(3, total)
     const start = Math.max(0, Math.min(T, total - len))
     const item = newText(start, start + len)
-    const showing = texts.filter((x) => !x.caption && x.start < item.end && x.end > item.start)
+    const showing = texts.filter((x) => !x.caption && !isBlur(x) && x.start < item.end && x.end > item.start)
     if (showing.length && info) {
       const { W, H } = frameSize(info, look)
       const ctx = document.createElement('canvas').getContext('2d')
@@ -730,6 +744,83 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
     if (done) commitEdit({ texts: done })
   }
 
+  /* -------------------------------------------------------------- blur */
+
+  const selectedBlur = selectedText && isBlur(selectedText) ? selectedText : null
+  const frameAspect = () => {
+    const { W, H } = frameSize(info, look)
+    return W / H
+  }
+
+  function startBlur () {
+    if (!hist) return
+    pb.pause()
+    selectText(null)
+    setBlurDraw((d) => ({ ...d, more: false }))
+    setPanel('blur')
+  }
+
+  /** A finished stroke or box on the picture: a new blur, or more of the chosen one. */
+  function onDrawBlur ({ strokes, box }) {
+    const T = pb.now()
+    if (selectedBlur && blurDraw.more && strokes) {
+      const next = addStrokes(selectedBlur, T, strokes, frameAspect())
+      commitEdit({ texts: (edit.texts || []).map((x) => (x.id === next.id ? next : x)) })
+      return
+    }
+    const start = Math.max(0, Math.min(T, total - 0.2))
+    const end = total
+    let item
+    if (strokes) {
+      const fit = fitStrokes(strokes, frameAspect())
+      item = newBlur(start, end, 'pencil', fit.box, fit.strokes)
+    } else {
+      item = newBlur(start, end, blurDraw.shape, box)
+    }
+    const fixed = withLanes(edit.texts || [], (t) => t.start, (t) => t.end)
+    item.lane = textLane(fixed, item.start, item.end)
+    commitEdit({ texts: [...fixed, item] })
+    selectText(item.id)
+    flash('Blurred from here to the end. Drag its ends on the timeline to change when it shows.')
+  }
+
+  // Dragging a blur on the picture, at the playhead's moment.
+  const blurMoveRef = useRef(null)
+  function onMoveBlur (id, box, phase) {
+    if (phase === 'move') {
+      const T = pb.now()
+      const next = (edit.texts || []).map((x) => (x.id === id ? placeAt(x, T, box) : x))
+      blurMoveRef.current = next
+      setTextDraft(next)
+      return
+    }
+    const done = blurMoveRef.current
+    blurMoveRef.current = null
+    setTextDraft(null)
+    if (done) commitEdit({ texts: done })
+  }
+
+  function markBlurSpot () {
+    if (!selectedBlur) return
+    const T = pb.now()
+    const next = markSpot(selectedBlur, T - selectedBlur.start, spotAt(selectedBlur, T))
+    commitEdit({ texts: (edit.texts || []).map((x) => (x.id === next.id ? next : x)) })
+    flash('Spot marked. Play to where the thing has moved, pause, and drag the blur onto it: another spot is marked there.')
+  }
+
+  function unmarkBlurSpot (i) {
+    if (!selectedBlur) return
+    const next = removeSpot(selectedBlur, i)
+    commitEdit({ texts: (edit.texts || []).map((x) => (x.id === next.id ? next : x)) })
+  }
+
+  // The stage's blur tool: drawing a new one, painting more, or moving the chosen one.
+  const blurTool = panel === 'blur'
+    ? { mode: 'draw', shape: blurDraw.shape, size: blurDraw.size }
+    : selectedBlur && panel === 'text'
+      ? (blurDraw.more ? { mode: 'draw', shape: 'pencil', size: blurDraw.size } : { mode: 'edit' })
+      : null
+
   /** The style of one caption, copied to every caption. */
   function styleAllCaptions (from) {
     const look = captionStyleOf(from)
@@ -764,6 +855,29 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
   function transitionEverywhere (type, d) {
     commitEdit({ pieces: pieces.map((p, i) => (i === 0 ? p : { ...p, transition: { type, d } })) })
     flash(`Every cut now has a ${type} transition`)
+  }
+
+  /* ------------------------------------------------------------- speed */
+
+  // The piece the speed panel works on: the selected one, or the only one.
+  const speedPiece = selected || (pieces.length === 1 ? pieces[0] : null)
+  const tidyPiece = (p) => {
+    const q = { ...p }
+    for (const k of ['speed', 'speedEnd', 'pitch', 'smooth']) if (q[k] === undefined) delete q[k]
+    return q
+  }
+
+  function setSpeed (patch, key) {
+    if (!speedPiece) return
+    pb.pause()
+    commitEdit({ pieces: pieces.map((p) => (p.id === speedPiece.id ? tidyPiece({ ...p, ...patch }) : p)) }, key)
+  }
+
+  function speedEverywhere () {
+    if (!speedPiece) return
+    const { speed, speedEnd, pitch, smooth } = speedPiece
+    commitEdit({ pieces: pieces.map((p) => (isImage(p) ? p : tidyPiece({ ...p, speed, speedEnd, pitch, smooth }))) })
+    flash('Every clip piece now plays at this speed')
   }
 
   /* ------------------------------------------------------------- clips */
@@ -909,7 +1023,7 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
   if (note) status = note
   else if (selectedText) status = `${selectedText.caption ? 'Caption' : 'Text'} · ${formatClock(selectedText.start, true)} to ${formatClock(selectedText.end, true)} · drag it on the picture to move it`
   else if (selected && isImage(selected)) status = `Picture · shows for ${formatClock(selected.end - selected.start, true)} · drag the white handles to change`
-  else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(selected.end - selected.start, true)} · drag the white handles to trim${pieces.length > 1 ? ', or drag the piece to move it' : ''}`
+  else if (selected) status = `Piece ${selectedIndex + 1} of ${pieces.length} · ${formatClock(lengthOf(selected), true)} · drag the white handles to trim${pieces.length > 1 ? ', or drag the piece to move it' : ''}`
   else if (pieces.length > 1) status = `${pieces.length} pieces`
 
   return (
@@ -954,6 +1068,9 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
         selectedTextId={selectedTextId}
         onSelectText={selectText}
         onMoveText={onMoveText}
+        blurTool={blurTool}
+        onDrawBlur={onDrawBlur}
+        onMoveBlur={onMoveBlur}
       />
       {/* The added song plays from here, kept in step by the playback engine. */}
       {sounds.map((x) => (
@@ -1009,7 +1126,7 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
         onTrim={onTrim}
         onReorder={reorder}
         onZoom={zoomBy}
-        compact={['text', 'transition', 'sound', 'crop', 'canvas'].includes(panel)}
+        compact={['text', 'transition', 'sound', 'crop', 'canvas', 'speed', 'blur'].includes(panel)}
         onSound={onSound}
         onAddMusic={() => { pb.pause(); setSheet('audio-pick') }}
       />
@@ -1062,7 +1179,27 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
           <button className="ed__go" onClick={() => setPanel(null)}>Done</button>
         </div>
       ) : null}
-      {panel === 'text' && selectedText ? (
+      {panel === 'blur' ? (
+        <BlurPanel draw={blurDraw} onDraw={(p) => setBlurDraw((d) => ({ ...d, ...p }))} onClose={() => setPanel(null)} />
+      ) : null}
+      {panel === 'text' && selectedBlur ? (
+        <BlurPanel
+          key={selectedBlur.id}
+          blur={selectedBlur}
+          draw={blurDraw}
+          onDraw={(p) => setBlurDraw((d) => ({ ...d, ...p }))}
+          total={total}
+          t={pb.t}
+          onChange={(patch, key) => updateText(selectedBlur.id, patch, key)}
+          onMark={markBlurSpot}
+          onUnmark={unmarkBlurSpot}
+          onGo={(T) => pb.seek(T)}
+          onDuplicate={() => duplicateText(selectedBlur)}
+          onDelete={() => deleteText(selectedBlur.id)}
+          onClose={() => selectText(null)}
+        />
+      ) : null}
+      {panel === 'text' && selectedText && !selectedBlur ? (
         <TextPanel
           key={selectedText.id}
           item={selectedText}
@@ -1092,6 +1229,15 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
           onClose={() => { setPanel(null); setSelectedJoin(null) }}
         />
       ) : null}
+      {panel === 'speed' ? (
+        <SpeedPanel
+          piece={speedPiece}
+          count={pieces.filter((p) => !isImage(p)).length}
+          onChange={setSpeed}
+          onAll={speedEverywhere}
+          onClose={() => setPanel(null)}
+        />
+      ) : null}
       {panel === 'sound' && selectedSound ? (
         <SoundPanel
           key={selectedSound.id}
@@ -1118,11 +1264,19 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
         </div>
       ) : null}
 
-      <nav className={'ed__tools' + (['text', 'transition', 'sound', 'crop', 'canvas'].includes(panel) ? ' is-hidden' : '')} aria-label="Editing tools">
+      <nav className={'ed__tools' + (['text', 'transition', 'sound', 'crop', 'canvas', 'speed', 'blur'].includes(panel) ? ' is-hidden' : '')} aria-label="Editing tools">
         <Tool icon={<Scissors />} label="Split" hint="S" onClick={split} disabled={!hist} />
         <Tool icon={<Trash />} label="Delete" hint="Del" onClick={deleteSelected} disabled={!selected || pieces.length < 2} />
         <Tool icon={<Timer />} label="Split at…" onClick={() => togglePanel('at')} on={panel === 'at'} disabled={!hist} />
         <Tool icon={<Grid />} label="Into parts" onClick={() => togglePanel('parts')} on={panel === 'parts'} disabled={!hist || Boolean(project)} title={project ? 'Cuts one clip into equal parts; not for projects' : 'Into parts'} />
+        <Tool
+          icon={<Speed />}
+          label="Speed"
+          onClick={() => { pb.pause(); togglePanel('speed') }}
+          on={panel === 'speed' || pieces.some((p) => speedMark(p))}
+          disabled={!hist}
+          title="Slow motion, fast forward, or slow then fast"
+        />
         <span className="ed__tools-sep" />
         <Tool icon={<Crop />} label="Crop" onClick={() => { pb.pause(); togglePanel('crop') }} on={panel === 'crop' || Boolean(look.crop)} disabled={!hist || Boolean(project)} title={project ? 'Crop is for a clip of your own; a project uses Canvas for its shape' : 'Crop'} />
         <Tool icon={<Aspect />} label="Canvas" onClick={() => togglePanel('canvas')} on={panel === 'canvas' || look.canvas !== 'original'} disabled={!hist} />
@@ -1137,6 +1291,14 @@ export default function Editor ({ video: clip, project, bucket, onBack }) {
         <span className="ed__tools-sep" />
         <Tool icon={<Sparkle />} label="Templates" onClick={() => { pb.pause(); setSheet('looks') }} disabled={!hist} />
         <Tool icon={<TextIcon />} label="Text" onClick={addText} disabled={!hist} />
+        <Tool
+          icon={<Pencil />}
+          label="Blur"
+          onClick={startBlur}
+          on={panel === 'blur' || Boolean(selectedBlur)}
+          disabled={!hist}
+          title="Blur out part of the picture: a face, a name, a number plate"
+        />
         <Tool
           icon={<Captions />}
           label="Captions"

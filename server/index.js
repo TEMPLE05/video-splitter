@@ -11,6 +11,7 @@ import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
 import { mountProjects } from './projects.js'
+import { cleanSpeed, intoOf, pictureSpeed, playedLength, smoothFrames, soundSpeed } from './speed.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -1341,7 +1342,7 @@ function pngSize (buf) {
   return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
 }
 
-const pieceLength = (p) => (p.kind === 'image' ? p.length : p.end - p.start)
+const pieceLength = (p) => (p.kind === 'image' ? p.length : playedLength(p))
 
 /**
  * Writes each track retimed to an edit: lines inside the kept pieces move to
@@ -1360,7 +1361,7 @@ async function writeSubtitles (tracks, pieces) {
         for (const c of track.cues) {
           const a = Math.max(c.a, piece.start)
           const b = Math.min(c.b, piece.end)
-          if (b - a > 0.04) lines.push({ a: a - piece.start + offset, b: b - piece.start + offset, text: c.text })
+          if (b - a > 0.04) lines.push({ a: intoOf(piece, a) + offset, b: intoOf(piece, b) + offset, text: c.text })
         }
       }
       offset += pieceLength(piece)
@@ -1514,7 +1515,7 @@ function runTracked (args, job, outLen) {
  * the edit keeps exactly its length and everything timed to it (song, text,
  * captions) stays where it was put.
  */
-async function render ({ main, pieces, target, withOriginal, sounds, crop, canvas, background, bgFile, at, tracks, temps, overlays, overlayBlank, quality, gif, fades, job }) {
+async function render ({ main, pieces, target, withOriginal, sounds, crop, canvas, background, bgFile, at, tracks, temps, overlays, overlayBlank, blurs, quality, gif, fades, job }) {
   const meta = main.meta
   const Q = QUALITY[quality] || QUALITY.standard
   const { W, H, padded } = frameSize(meta, crop, canvas, Q.cap)
@@ -1523,10 +1524,11 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
   const args = ['-hide_banner', '-loglevel', 'error', '-y']
   const graph = []
 
-  // How much each cut's transition borrows from either side.
+  // How much each cut's transition borrows from either side, in timeline
+  // seconds: spare footage at the speed of that edge.
   const room = (p, side) => {
     if (p.kind === 'image') return Infinity
-    return side === 'after' ? Math.max(0, p.meta.duration - p.end) : Math.max(0, p.start)
+    return side === 'after' ? Math.max(0, p.meta.duration - p.end) / (p.speed ? p.speed.b : 1) : Math.max(0, p.start) / (p.speed ? p.speed.a : 1)
   }
   const ext = pieces.map(() => ({ before: 0, after: 0 }))
   const joins = pieces.map((p, k) => {
@@ -1554,6 +1556,7 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
     fillLengths.push(len)
     return `[${pieces.length + fillLengths.length - 1}:v:0]`
   }
+  const srcExt = pieces.map(() => ({ before: 0, after: 0 }))
   pieces.forEach((p, i) => {
     const len = pieceLength(p) + ext[i].before + ext[i].after
     const own = p.file === main.file
@@ -1561,20 +1564,28 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
       args.push('-loop', '1', '-framerate', fps, '-t', String(len), '-i', p.file)
       graph.push(fitInto(`[${i}:v:0]`, `[s${i}]`, W, H, background, i, pictureFor(len)))
     } else {
-      args.push('-ss', String(p.start - ext[i].before), '-t', String(len), '-i', p.file)
+      // Borrowed footage, in source seconds, at the speed of its edge.
+      const before = ext[i].before * (p.speed ? p.speed.a : 1)
+      const after = ext[i].after * (p.speed ? p.speed.b : 1)
+      srcExt[i] = { before, after }
+      args.push('-ss', String(p.start - before), '-t', String(p.end - p.start + before + after), '-i', p.file)
       // The crop belongs to the clip it was drawn on; other clips are fitted.
       const cropText = crop && own
         ? `crop=${even(crop.w * meta.width)}:${even(crop.h * meta.height)}:${Math.round(crop.x * meta.width)}:${Math.round(crop.y * meta.height)},`
         : ''
       const fills = !own ? Math.abs(p.meta.width / p.meta.height - W / H) > 0.01 : padded
-      if (!fills) graph.push(`[${i}:v:0]${cropText}scale=${W}:${H},setsar=1[s${i}]`)
-      else graph.push(fitInto(`[${i}:v:0]${cropText}`, `[s${i}]`, W, H, background, i, pictureFor(len)))
+      const speedText = pictureSpeed(p, before)
+      if (!fills) graph.push(`[${i}:v:0]${speedText}${cropText}scale=${W}:${H},setsar=1[s${i}]`)
+      else graph.push(fitInto(`[${i}:v:0]${speedText}${cropText}`, `[s${i}]`, W, H, background, i, pictureFor(len)))
     }
-    graph.push(`[s${i}]fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS,settb=AVTB[v${i}]`)
+    graph.push(`[s${i}]${p.kind === 'image' ? '' : smoothFrames(p, fps)}fps=${fps},format=yuv420p,trim=duration=${len},setpts=PTS-STARTPTS,settb=AVTB[v${i}]`)
     if (withOriginal) {
-      graph.push(p.kind === 'image' || !p.meta.hasAudio
-        ? `anullsrc=r=48000:cl=stereo,atrim=duration=${len}[a${i}]`
-        : `[${i}:a:0]${AFMT},apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
+      if (p.kind === 'image' || !p.meta.hasAudio) {
+        graph.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${len}[a${i}]`)
+      } else {
+        graph.push(soundSpeed(p, `[${i}:a:0]${AFMT},`, `[as${i}]`, srcExt[i].before, srcExt[i].after, 48000, i))
+        graph.push(`[as${i}]apad,atrim=duration=${len},asetpts=PTS-STARTPTS[a${i}]`)
+      }
     }
   })
 
@@ -1646,6 +1657,43 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
   // non-overlapping pictures with transparent gaps, laid over the video; one
   // lane holds every caption, however many there are.
   let videoOut = '[vout]'
+  const q = (f) => `file '${f.replace(/\\/g, '/')}'`
+  /** A concat list showing each picture for its time, a blank between and after. */
+  const slideshow = (items, blank) => {
+    const lines = ['ffconcat version 1.0']
+    let cursor = 0
+    for (const o of items) {
+      if (o.a > cursor + 0.001) lines.push(q(blank), `duration ${(o.a - cursor).toFixed(4)}`)
+      lines.push(q(o.file), `duration ${(o.b - o.a).toFixed(4)}`)
+      cursor = o.b
+    }
+    lines.push(q(blank), `duration ${Math.max(0.05, total - cursor + 0.05).toFixed(4)}`)
+    // The last entry's duration is ignored by the concat reader, so the
+    // blank is listed once more to close it.
+    lines.push(q(blank))
+    const list = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.txt`)
+    fs.writeFileSync(list, lines.join('\n'))
+    temps.push(list)
+    return list
+  }
+
+  // Blurs, under the text: the whole picture blurred, then let through only
+  // where the blur's mask is white. The mask is a slideshow of where the area
+  // is, drawn by the editor, so a moving blur follows its spots.
+  for (const [j, b] of (gif ? [] : blurs || []).entries()) {
+    if (!b.items.length) continue
+    args.push('-f', 'concat', '-safe', '0', '-i', slideshow(b.items, b.blank))
+    const from = Math.max(0, b.items[0].a - 0.05).toFixed(3)
+    const to = (b.items[b.items.length - 1].b + 0.05).toFixed(3)
+    graph.push(`[${next}:v]fps=${fps},scale=${W}:${H},format=gray,setpts=PTS-STARTPTS[bm${j}]`)
+    graph.push(`${videoOut}split[bk${j}][bb${j}]`)
+    graph.push(`[bb${j}]gblur=sigma=${Math.max(1, b.radius * H).toFixed(2)}:steps=2:enable='between(t,${from},${to})'[bg${j}]`)
+    graph.push(`[bg${j}][bm${j}]alphamerge[ba${j}]`)
+    graph.push(`[bk${j}][ba${j}]overlay=0:0:eof_action=pass[bo${j}]`)
+    videoOut = `[bo${j}]`
+    next += 1
+  }
+
   if (overlays && overlays.length) {
     const lanes = []
     for (const o of overlays) {
@@ -1653,23 +1701,8 @@ async function render ({ main, pieces, target, withOriginal, sounds, crop, canva
       if (lane) { lane.items.push(o); lane.end = o.b } else lanes.push({ end: o.b, items: [o] })
     }
     if (lanes.length > 8) throw httpError(400, 'Too many texts on screen at the same moment; keep it to 8')
-    const q = (f) => `file '${f.replace(/\\/g, '/')}'`
     lanes.forEach((lane, j) => {
-      const lines = ['ffconcat version 1.0']
-      let cursor = 0
-      for (const o of lane.items) {
-        if (o.a > cursor + 0.001) lines.push(q(overlayBlank.file), `duration ${(o.a - cursor).toFixed(4)}`)
-        lines.push(q(o.file), `duration ${(o.b - o.a).toFixed(4)}`)
-        cursor = o.b
-      }
-      lines.push(q(overlayBlank.file), `duration ${Math.max(0.05, total - cursor + 0.05).toFixed(4)}`)
-      // The last entry's duration is ignored by the concat reader, so the
-      // blank is listed once more to close the lane.
-      lines.push(q(overlayBlank.file))
-      const list = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.txt`)
-      fs.writeFileSync(list, lines.join('\n'))
-      temps.push(list)
-      args.push('-f', 'concat', '-safe', '0', '-i', list)
+      args.push('-f', 'concat', '-safe', '0', '-i', slideshow(lane.items, overlayBlank.file))
       graph.push(`[${next}:v]fps=${fps},scale=${W}:${H},format=rgba,setpts=PTS-STARTPTS[L${j}]`)
       graph.push(`${videoOut}[L${j}]overlay=0:0:eof_action=pass[o${j}]`)
       videoOut = `[o${j}]`
@@ -1778,7 +1811,7 @@ async function doExport (body, job) {
     const end = Math.min(pm.duration || Number(seg.end), Number(seg.end))
     if (!(end > start)) throw httpError(400, 'A segment ends before it starts')
     if (end - start < 0.05) throw httpError(400, 'A segment is too short to export')
-    clean.push({ kind: 'video', file: pfile, meta: pm, start, end, transition })
+    clean.push({ kind: 'video', file: pfile, meta: pm, start, end, transition, speed: cleanSpeed(seg) })
   }
 
   // Sounds laid over the edit. An older edit sends one song as `music`,
@@ -1817,14 +1850,17 @@ async function doExport (body, job) {
   const quality = QUALITY[body.quality] ? body.quality : 'standard'
   const gif = body.format === 'gif'
   const texts = Array.isArray(body.overlays) ? body.overlays : []
+  const blursIn = Array.isArray(body.blurs) ? body.blurs : []
+  if (blursIn.length > 8) throw httpError(400, 'Too many blurs; keep it to 8')
+  if (blursIn.reduce((n, b) => n + (Array.isArray(b && b.frames) ? b.frames.length : 0), 0) > 20000) throw httpError(400, 'Too many moving blurs in one export')
   const captions = Array.isArray(body.captions) ? body.captions : []
   if (texts.length > 30000) throw httpError(400, 'Too much text animation in one export')
   const totalLen = clean.reduce((t, p) => t + pieceLength(p), 0)
   if (gif && !body.join) throw httpError(400, 'A GIF is always one file; choose One video')
   if (gif && totalLen > 60) throw httpError(400, 'A GIF of more than a minute would be enormous; keep it under 60 seconds')
 
-  const plain = !sounds.length && !crop && canvas === 'original' && !texts.length && !fades.in && !fades.out && quality === 'standard' &&
-    clean.every((p) => p.kind === 'video' && p.file === file)
+  const plain = !sounds.length && !crop && canvas === 'original' && !texts.length && !blursIn.length && !fades.in && !fades.out && quality === 'standard' &&
+    clean.every((p) => p.kind === 'video' && p.file === file && !p.speed)
   const fast = body.mode === 'fast' && !body.join && plain
 
   const outDir = project ? path.join(resolveInSource(project.bucketName), 'edits') : path.join(path.dirname(file), 'edits')
@@ -1873,6 +1909,43 @@ async function doExport (body, job) {
         '-i', `color=c=black@0:s=${overlayBlank.w}x${overlayBlank.h},format=rgba`, '-frames:v', '1', overlayBlank.file])
       if (r.code !== 0) throw httpError(500, 'Could not prepare the text layer')
     }
+    // Blur masks, likewise: each blur's pictures and a black one for the gaps.
+    if (job && blursIn.length) job.stage = 'Preparing blurs'
+    const blurs = []
+    for (const b of blursIn) {
+      const radius = Math.min(Math.max(Number(b && b.radius) || 0.02, 0.001), 0.1)
+      const items = []
+      let size = null
+      for (const fr of Array.isArray(b && b.frames) ? b.frames : []) {
+        const m = /^data:image\/png;base64,(.+)$/.exec(String(fr && fr.png))
+        const a = Number(fr && fr.start)
+        const e = Number(fr && fr.end)
+        if (!m || !(e > a) || a < 0) throw httpError(400, 'A blur in the edit could not be read')
+        const buf = Buffer.from(m[1], 'base64')
+        const sz = pngSize(buf)
+        if (!sz || (size && (sz.w !== size.w || sz.h !== size.h))) throw httpError(400, 'A blur in the edit could not be read')
+        size = sz
+        const file = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+        temps.push(file)
+        await fsp.writeFile(file, buf)
+        items.push({ a, b: e, file })
+      }
+      if (!items.length) continue
+      items.sort((x, y) => x.a - y.a)
+      const blank = path.join(os.tmpdir(), `videosplitter-${process.pid}-${crypto.randomUUID()}.png`)
+      temps.push(blank)
+      const r = await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+        '-i', `color=c=black:s=${size.w}x${size.h}`, '-frames:v', '1', blank])
+      if (r.code !== 0) throw httpError(500, 'Could not prepare the blurs')
+      blurs.push({ radius, items, blank })
+    }
+    const sliceBlurs = (at, len) => blurs.map((b) => ({
+      ...b,
+      items: b.items
+        .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
+        .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
+    })).filter((b) => b.items.length)
+
     const slice = (at, len) => overlays
       .filter((o) => o.b > at + 0.01 && o.a < at + len - 0.01)
       .map((o) => ({ a: Math.max(0, o.a - at), b: Math.min(len, o.b - at), file: o.file }))
@@ -1884,7 +1957,7 @@ async function doExport (body, job) {
     // re-encoded, since joining stream-copied pieces glitches at every cut.
     if (body.join) {
       const target = await reservePath(path.join(outDir, stem + (gif ? ' edit.gif' : ' edit.mp4')))
-      const r = await render({ ...common, pieces: clean, target, at: 0, overlays: slice(0, totalLen) })
+      const r = await render({ ...common, pieces: clean, target, at: 0, overlays: slice(0, totalLen), blurs: sliceBlurs(0, totalLen) })
       if (r.code !== 0) await fail(target, r.stderr)
       const written = [{ name: path.basename(target), size: await sizeOf(target) }]
       const srt = body.srt && !gif ? await writeSrt(target, captions, 0, totalLen) : null
@@ -1927,7 +2000,7 @@ async function doExport (body, job) {
         if (r.code !== 0) await fail(target, r.stderr, finished)
         Object.assign(entry, { asked: piece.start, startedAt: Math.round(from * 1000) / 1000 })
       } else {
-        const r = await render({ ...common, pieces: [piece], target, at, overlays: slice(at, len) })
+        const r = await render({ ...common, pieces: [piece], target, at, overlays: slice(at, len), blurs: sliceBlurs(at, len) })
         if (r.code !== 0) await fail(target, r.stderr, finished)
         subtitles = Math.max(subtitles, r.subtitles)
       }

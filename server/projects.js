@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { cleanSpeed, spanOf } from './speed.js'
 
 /**
  * Projects: edits that start from nothing rather than from one clip. A video
@@ -38,7 +39,10 @@ export function mountProjects (app, { ROOT, wrap, httpError, getConfig }) {
       name: rec.name,
       shape: rec.shape,
       savedAt: rec.savedAt || rec.createdAt,
-      length: pieces.reduce((t, p) => t + (p.end - p.start), 0),
+      length: pieces.reduce((t, p) => {
+        const sp = p.kind === 'image' ? null : cleanSpeed(p)
+        return t + (sp ? spanOf(p.end - p.start, sp.a, sp.b) : p.end - p.start)
+      }, 0),
       cover: first ? (first.kind === 'image' ? { image: first.image } : { clip: first.src }) : null
     }
   }

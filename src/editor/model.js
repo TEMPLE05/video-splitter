@@ -16,7 +16,82 @@
 // counter restarting at 1 would hand out ones already in use.
 export const newId = () => 'p' + Math.random().toString(36).slice(2, 10)
 
-export const lengthOf = (p) => p.end - p.start
+/**
+ * Speed. A piece plays at `speed` (1 when unset). With `speedEnd` it ramps
+ * evenly from one to the other across its footage, slow then fast, as CapCut
+ * does. Pictures have no speed. `start` and `end` stay in source time; only
+ * how long the piece lasts on the timeline changes, so a 4 second stretch at
+ * 2x takes 2 seconds. Must match the server, which renders it.
+ *
+ * With speed v(u) = a + (b - a)u over the footage (u from 0 to 1, L seconds
+ * of it), the timeline time to reach u is the integral of L / v, which has a
+ * closed form both ways, so nothing here is approximated.
+ */
+export const SPEED_MIN = 0.1
+export const SPEED_MAX = 10
+const clampSpeed = (v) => Math.min(Math.max(Number(v) || 1, SPEED_MIN), SPEED_MAX)
+const hasSpeed = (p) => !isImage(p) && ((p.speed != null && p.speed !== 1) || p.speedEnd != null)
+export function speedsOf (p) {
+  if (!hasSpeed(p)) return [1, 1]
+  const a = clampSpeed(p.speed ?? 1)
+  return [a, p.speedEnd != null ? clampSpeed(p.speedEnd) : a]
+}
+// Timeline seconds to play u of L seconds of footage ramping a to b.
+const spanOf = (L, a, b, u) => (Math.abs(b - a) < 1e-6 ? (L * u) / a : (L / (b - a)) * Math.log((a + (b - a) * u) / a))
+
+export const lengthOf = (p) => {
+  const L = p.end - p.start
+  if (!hasSpeed(p)) return L
+  const [a, b] = speedsOf(p)
+  return spanOf(L, a, b, 1)
+}
+
+/**
+ * Where in the piece's footage it is `into` seconds after the piece begins on
+ * the timeline. Outside the piece (a transition borrowing footage beyond a
+ * cut) it carries on at the speed of that edge.
+ */
+export function sourceAt (p, into) {
+  if (!hasSpeed(p)) return p.start + into
+  const [a, b] = speedsOf(p)
+  const L = p.end - p.start
+  const len = spanOf(L, a, b, 1)
+  if (into <= 0) return p.start + into * a
+  if (into >= len) return p.end + (into - len) * b
+  const u = Math.abs(b - a) < 1e-6 ? (into * a) / L : (a * (Math.exp((into * (b - a)) / L) - 1)) / (b - a)
+  return p.start + u * L
+}
+
+/** The other way: how far into the piece, on the timeline, a source moment is. */
+export function intoAt (p, source) {
+  if (!hasSpeed(p)) return source - p.start
+  const [a, b] = speedsOf(p)
+  const L = p.end - p.start
+  if (source <= p.start) return (source - p.start) / a
+  if (source >= p.end) return spanOf(L, a, b, 1) + (source - p.end) / b
+  return spanOf(L, a, b, (source - p.start) / L)
+}
+
+/** How fast the footage plays at a source moment of the piece. */
+export function rateAt (p, source) {
+  const [a, b] = speedsOf(p)
+  if (a === b) return a
+  const u = Math.min(Math.max((source - p.start) / (p.end - p.start), 0), 1)
+  return a + (b - a) * u
+}
+
+/**
+ * The part of a piece between two source moments, keeping its speed: a ramp
+ * cut in two stays one smooth ramp across both halves.
+ */
+export function slicePiece (p, from, to) {
+  const out = { ...p, id: newId(), start: from, end: to }
+  if (p.speedEnd != null && hasSpeed(p)) {
+    out.speed = rateAt(p, from)
+    out.speedEnd = rateAt(p, to)
+  }
+  return out
+}
 
 /**
  * A picture piece holds a still for its length. It keeps start and end like a
@@ -61,7 +136,7 @@ export function locate (pieces, t) {
     const len = lengthOf(pieces[i])
     if (t < acc + len || i === pieces.length - 1) {
       const into = Math.min(Math.max(t - acc, 0), len)
-      return { index: i, offset: acc, source: pieces[i].start + into }
+      return { index: i, offset: acc, source: sourceAt(pieces[i], into) }
     }
     acc += len
   }
@@ -71,7 +146,7 @@ export function locate (pieces, t) {
 /** Timeline time of a source moment inside a given piece. */
 export function timelineAt (pieces, index, source) {
   const p = pieces[index]
-  return offsets(pieces)[index] + Math.min(Math.max(source - p.start, 0), lengthOf(p))
+  return offsets(pieces)[index] + Math.min(Math.max(intoAt(p, source), 0), lengthOf(p))
 }
 
 /** Splits the piece under `t`. Null when the cut would leave a sliver. */
@@ -79,10 +154,14 @@ export function splitAt (pieces, t, min) {
   const { index, source } = locate(pieces, t)
   const p = pieces[index]
   if (source - p.start < min || p.end - source < min) return null
+  // Each half stays what the piece was (a picture, or a clip from another
+  // file, at its speed); only the first keeps the transition into it.
+  const second = slicePiece(p, source, p.end)
+  delete second.transition
   return [
     ...pieces.slice(0, index),
-    { id: newId(), start: p.start, end: source },
-    { id: newId(), start: source, end: p.end },
+    slicePiece(p, p.start, source),
+    second,
     ...pieces.slice(index + 1)
   ]
 }
@@ -123,11 +202,13 @@ export function splitEvenly (pieces, n, duration, min) {
   const span = pieces.length === 1 ? pieces[0] : { start: 0, end: duration }
   const len = span.end - span.start
   if (!(n >= 2) || len / n < min) return null
-  return Array.from({ length: n }, (_, k) => ({
-    id: newId(),
-    start: span.start + (len * k) / n,
-    end: k === n - 1 ? span.end : span.start + (len * (k + 1)) / n
-  }))
+  // A lone piece keeps its speed across the parts; parts of the whole clip play as filmed.
+  const from = pieces.length === 1 ? pieces[0] : { id: '', start: 0, end: duration }
+  return Array.from({ length: n }, (_, k) => {
+    const part = slicePiece(from, span.start + (len * k) / n, k === n - 1 ? span.end : span.start + (len * (k + 1)) / n)
+    delete part.transition
+    return part
+  })
 }
 
 /**
@@ -153,7 +234,12 @@ export const TRANSITIONS = {
  */
 export function transitionWindows (pieces, durationOf) {
   const offs = offsets(pieces)
-  const room = (q, side) => (isImage(q) ? Infinity : side === 'after' ? Math.max(0, durationOf(q) - q.end) : Math.max(0, q.start))
+  // Spare footage beyond each edge, in timeline seconds at that edge's speed.
+  const room = (q, side) => {
+    if (isImage(q)) return Infinity
+    const [a, b] = speedsOf(q)
+    return side === 'after' ? Math.max(0, durationOf(q) - q.end) / b : Math.max(0, q.start) / a
+  }
   return pieces.map((p, k) => {
     const t = p.transition
     if (k === 0 || !t || !TRANSITIONS[t.type]) return null
@@ -196,4 +282,11 @@ export function parseClock (text) {
   }
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+/** A piece's speed settings, for sending to the server; nothing at normal speed. */
+export function speedFields (p) {
+  const [a, b] = speedsOf(p)
+  if (a === 1 && b === 1) return {}
+  return { speed: a, ...(p.speedEnd != null ? { speedEnd: b } : {}), ...(p.pitch === 'shift' ? { pitch: 'shift' } : {}), ...(p.smooth ? { smooth: true } : {}) }
 }

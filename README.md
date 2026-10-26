@@ -318,6 +318,45 @@ switch between one video and separate parts in the export window at any time.
   piece. A clip of a different shape is fitted into the frame with the blurred
   fill.
 
+### Speed
+
+**Speed** changes how fast a piece plays: select it on the timeline (or just
+open Speed if the edit is one piece) and drag the slider, from 0.1x slow motion
+to 10x. The middle is normal speed, and 0.5x and 2x sit the same distance
+either side. The piece gets shorter or longer on the timeline to match, and
+its label shows the speed.
+
+- **Slow then fast** ramps the speed smoothly across the piece, from the
+  **Starts at** speed to the **Ends at** speed. Split a ramped piece and each
+  half carries on the same ramp.
+- **Voice.** **Sounds normal** keeps voices sounding like themselves at any
+  speed. **Chipmunk / deep** lets them go high when sped up and low when
+  slowed down.
+- **Smooth slow motion**, offered when a piece is slowed down, makes up
+  in-between frames in the export so slow footage glides instead of
+  stuttering. It makes exporting much slower, and the preview does not show
+  it.
+- **Use on every clip piece** copies the speed to all of them; **Normal
+  speed** puts a piece back as it was filmed.
+
+Captions listen to the edit at its speeds, so they stay in step.
+
+### Blur
+
+**Blur** hides part of the picture: a face, a name, a number plate. Pick
+**Pencil** and paint over what to hide, or drag out a **Box** or an **Oval**.
+It is blurred from the playhead to the end of the edit, and shows on the
+timeline as a blue bar beside the texts: drag its ends to change when it shows,
+or type the times in its panel. Click it to change how strong it is, paint more
+of the picture into it, duplicate it or delete it.
+
+On the picture, drag a blur to move it and a corner to size it. If the thing
+it hides moves, use **marked spots**: press **+ Mark a spot here**, play on to
+where the thing has gone, pause, and drag the blur onto it. A spot is marked
+there too, and the blur glides from each spot to the next. Spots show as small
+diamonds on the blur's bar and as times in its panel, where a click goes to
+one and the × removes it.
+
 ### Sound, crop, canvas and pictures
 
 - **Add sound** places a song or any sound file at the playhead. Pick one
@@ -526,14 +565,6 @@ captions. Deleting it just means downloading them again next time.
 
 All five are gitignored.
 
-## Still to come
-
-**Speed.** Slow motion and speeding pieces up are being designed.
-
-**Publishing.** Upload a finished clip straight to YouTube. This needs a Google
-Cloud project, OAuth consent and the YouTube Data API, and unverified apps are
-capped at private uploads until review. Worth treating as optional.
-
 ## Layout
 
 ```
@@ -543,6 +574,7 @@ server/edits.js       Saves each clip's edit as you work
 server/library.js     Recycle Bin, moving clips between buckets, tidying up
 server/fonts.js       Fonts imported for text
 server/projects.js    Projects: videos started from pictures, kept in .edits/projects
+server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
 src/Projects.jsx      Project cards and the New project window
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
@@ -556,6 +588,7 @@ src/editor/Timeline.jsx    Canvas timeline: frames, waveform, trimming, moving, 
 src/editor/usePlayback.js  Plays the edit: two players, clips, pictures, transitions, song
 src/editor/Stage.jsx  The picture as exported: crop, canvas, fill, blends, text
 src/editor/text.js    Draws and animates text, the same for preview and export
+src/editor/blur.js    Blurs: their shapes, marked spots and the masks the export uses
 src/editor/frame.js   Size of the finished frame, matching the server
 src/editor/fonts.js   Loads imported fonts into the browser
 src/editor/panels.jsx Panels under the timeline: text, sound, transitions, splitting

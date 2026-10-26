@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatClock, isImage } from './model.js'
+import { formatClock, isImage, speedFields } from './model.js'
 import { frameSize } from './frame.js'
+import { blurMasks, blurRadius, isBlur } from './blur.js'
 import { ANIMS, STYLES, animsOf, drawText, fontOf, textFrames } from './text.js'
 import { Choice } from './panels.jsx'
 import { Captions, Check, Download, Music } from '../icons.jsx'
@@ -149,7 +150,7 @@ export async function textPictures (texts, info, look, total, onProgress) {
   const { W, H } = frameSize(info, look)
   const jobs = []
   for (const t of texts) {
-    if (!(t.start < total) || !t.text.trim()) continue
+    if (isBlur(t) || !(t.start < total) || !t.text.trim()) continue
     for (const f of textFrames(t)) if (f.start < total) jobs.push({ t, f })
   }
   const out = new Array(jobs.length)
@@ -181,10 +182,12 @@ const QUALITIES = {
   small: ['Small', 'At most 1280 pixels tall, for sending on.']
 }
 
+const plural = (n, word) => (n ? `${n} ${word}${n === 1 ? '' : 's'}` : null)
+
 const segmentsOf = (pieces, mainId) => pieces.map((p) => {
   const t = p.transition ? { transition: p.transition } : {}
   if (isImage(p)) return { kind: 'image', image: p.image, length: p.end - p.start, ...t }
-  return { ...(p.src && p.src !== mainId ? { src: p.src } : {}), start: p.start, end: p.end, ...t }
+  return { ...(p.src && p.src !== mainId ? { src: p.src } : {}), start: p.start, end: p.end, ...speedFields(p), ...t }
 })
 
 export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff, onSoundOff, sounds, look, texts, info, mode, onMode, onClose }) {
@@ -206,7 +209,7 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
   const gif = format === 'gif'
   const tooLongForGif = total > 60
   // A stream copy cannot crop, fill, add pictures or text, blend or mix in a song.
-  const plain = !sounds.length && !look.crop && look.canvas === 'original' && !pieces.some((p) => isImage(p) || p.transition || (p.src && p.src !== video.id)) &&
+  const plain = !sounds.length && !look.crop && look.canvas === 'original' && !pieces.some((p) => isImage(p) || p.transition || (p.src && p.src !== video.id) || speedFields(p).speed) &&
     !(texts || []).length && !look.fadeIn && !look.fadeOut && quality === 'standard' && !gif
 
   async function go () {
@@ -215,13 +218,19 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
     setResult(null)
     setProgress(0)
     try {
-      const overlays = texts && texts.length
+      const overlays = texts && texts.some((x) => !isBlur(x))
         ? await textPictures(texts, info, look, total, (n, of) => { setStage(`Preparing text ${n} of ${of}`); setProgress(n / of) })
         : []
+      // Each blur as mask pictures of where it is, for FFmpeg to blur through.
+      setStage('Preparing blurs')
+      const { W, H } = frameSize(info, look)
+      const blurs = (texts || []).filter((x) => isBlur(x) && x.start < total)
+        .map((b) => ({ radius: blurRadius(b.strength), frames: blurMasks({ ...b, end: Math.min(b.end, total) }, W, H) }))
       setStage('Starting')
       setProgress(0)
       const { job } = await exportStart({
         overlays,
+        blurs,
         ...(video.project ? { project: video.project.id } : { id: video.id }),
         segments: segmentsOf(pieces, video.id),
         join: mode === 'join' || gif,
@@ -262,7 +271,9 @@ export function ExportSheet ({ video, bucket, pieces, total, hasAudio, soundOff,
     look.canvas !== 'original' ? `${look.canvas} with a ${look.background === 'black' ? 'black' : 'blurred'} fill` : null,
     sounds.length === 1 ? `♪ ${sounds[0].name}` : sounds.length > 1 ? `${sounds.length} sounds` : null,
     captions.length ? 'captions' : null,
-    texts && texts.some((x) => !x.caption) ? `${texts.filter((x) => !x.caption).length} text${texts.filter((x) => !x.caption).length === 1 ? '' : 's'}` : null,
+    plural((texts || []).filter((x) => !x.caption && !isBlur(x)).length, 'text'),
+    plural((texts || []).filter(isBlur).length, 'blur'),
+    pieces.some((p) => speedFields(p).speed) ? 'speed changes' : null,
     cuts ? `${cuts} transition${cuts === 1 ? '' : 's'}` : null,
     look.fadeIn || look.fadeOut ? 'fades' : null
   ].filter(Boolean)
@@ -580,7 +591,7 @@ export function CaptionsSheet ({ video, pieces, sounds = [], clipSound = true, e
         model,
         names,
         translate,
-        segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { ...(p.src && p.src !== video.id ? { src: p.src } : {}), start: p.start, end: p.end }))
+        segments: pieces.map((p) => (isImage(p) ? { kind: 'image', length: p.end - p.start } : { ...(p.src && p.src !== video.id ? { src: p.src } : {}), start: p.start, end: p.end, ...speedFields(p) }))
       }
       for (;;) {
         const r = await transcribe(payload)

@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
-import { TRANSITIONS, formatClock, parseClock } from './model.js'
+import { SPEED_MAX, SPEED_MIN, TRANSITIONS, formatClock, isImage, lengthOf, parseClock, speedsOf } from './model.js'
 import { COLORS, CUSTOM_FONTS, FONTS, IN_ANIMS, LOOP_ANIMS, OUT_ANIMS, SIZE_MAX, SIZE_MIN, STYLES, animsOf } from './text.js'
 import { loadFont } from './fonts.js'
 import { uploadFont } from '../api.js'
+import { BLUR_SHAPES } from './blur.js'
 
 export function Tool ({ icon, label, hint, on, title, ...rest }) {
   return (
@@ -367,6 +368,206 @@ export function TransitionPanel ({ join, piece, count, look, playable, onSet, on
         <span className="ed__grow" />
         <button className="ed__go" onClick={onClose}>Done</button>
       </div>
+    </div>
+  )
+}
+
+// The speed slider runs on a log scale, so 1x sits in the middle and 0.5x and
+// 2x are as far from it as each other. Close to 1x it snaps to 1x.
+const SPAN = Math.log(SPEED_MAX / SPEED_MIN)
+const toPos = (v) => Math.round((Math.log(v / SPEED_MIN) / SPAN) * 1000)
+const fromPos = (pos) => {
+  const v = SPEED_MIN * Math.exp((pos / 1000) * SPAN)
+  if (Math.abs(v - 1) < 0.04) return 1
+  return Number(v.toFixed(v < 1 ? 2 : 1))
+}
+const showSpeed = (v) => (v < 1 ? v.toFixed(2) : v.toFixed(1)) + '×'
+
+function SpeedSlider ({ label, value, onChange }) {
+  return (
+    <label className="ed__panel-hint ed__vol ed__nogrow">
+      {label}
+      <input
+        type="range"
+        className="ed__speed"
+        min="0"
+        max="1000"
+        step="1"
+        value={toPos(value)}
+        onChange={(e) => onChange(fromPos(Number(e.target.value)))}
+        aria-label={label}
+      />
+      <span className="ed__vol-n">{showSpeed(value)}</span>
+    </label>
+  )
+}
+
+/**
+ * Speed of one piece: steady, or slow then fast across it, with the voice
+ * either kept as it is or let go high and low (chipmunk and deep), and
+ * optional made-up in-between frames so slow motion does not stutter.
+ */
+export function SpeedPanel ({ piece, count, onChange, onAll, onClose }) {
+  if (!piece || isImage(piece)) {
+    return (
+      <div className="ed__panel ed__panel--text">
+        <div className="ed__textrow">
+          <p className="ed__panel-hint ed__grow">
+            {piece ? 'A picture has no speed: drag its white handles to show it for longer or shorter.' : 'Tap a piece on the timeline to change its speed.'}
+          </p>
+          <button className="ed__go" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    )
+  }
+  const [a, b] = speedsOf(piece)
+  const ramp = piece.speedEnd != null
+  const footage = piece.end - piece.start
+  const key = 'speed:' + piece.id
+  const slow = Math.min(a, b) < 1
+  return (
+    <div className="ed__panel ed__panel--text">
+      <div className="ed__textrow">
+        <span className="ed__panel-label ed__nogrow">Speed</span>
+        <Choice on={!ramp} onClick={() => onChange({ speedEnd: undefined })}>Steady</Choice>
+        <Choice on={ramp} onClick={() => !ramp && onChange({ speed: Math.max(SPEED_MIN, a / 2), speedEnd: Math.min(SPEED_MAX, a * 2) })} title="Starts at one speed and ends at another, smoothly">Slow then fast</Choice>
+        <span className="ed__panel-sep" />
+        <span className="ed__panel-label ed__nogrow">Voice</span>
+        <Choice on={piece.pitch !== 'shift'} onClick={() => onChange({ pitch: undefined })} title="Sped up or slowed down, voices still sound like themselves">Sounds normal</Choice>
+        <Choice on={piece.pitch === 'shift'} onClick={() => onChange({ pitch: 'shift' })} title="Faster goes high like a chipmunk, slower goes deep">Chipmunk / deep</Choice>
+        <span className="ed__grow" />
+        {a !== 1 || b !== 1 || ramp || piece.pitch || piece.smooth
+          ? <button className="ed__ghost" onClick={() => onChange({ speed: undefined, speedEnd: undefined, pitch: undefined, smooth: undefined })}>Normal speed</button>
+          : null}
+        <button className="ed__go" onClick={onClose}>Done</button>
+      </div>
+      <div className="ed__textrow">
+        {ramp ? (
+          <>
+            <SpeedSlider label="Starts at" value={a} onChange={(v) => onChange({ speed: v }, key + ':a')} />
+            <SpeedSlider label="Ends at" value={b} onChange={(v) => onChange({ speedEnd: v }, key + ':b')} />
+          </>
+        ) : (
+          <SpeedSlider label="Speed" value={a} onChange={(v) => onChange({ speed: v === 1 ? undefined : v }, key)} />
+        )}
+        <span className="ed__panel-hint ed__grow">
+          Plays for {formatClock(lengthOf(piece), true)}{a !== 1 || b !== 1 ? ` (filmed ${formatClock(footage, true)})` : ''}
+        </span>
+        {count > 1 ? <button className="ed__ghost" onClick={onAll}>Use on every clip piece</button> : null}
+      </div>
+      {slow ? (
+        <div className="ed__textrow">
+          <Choice on={Boolean(piece.smooth)} onClick={() => onChange({ smooth: piece.smooth ? undefined : true })}>Smooth slow motion</Choice>
+          <span className="ed__panel-hint ed__grow">
+            {piece.smooth
+              ? 'The export makes up in-between frames so slow parts glide instead of stutter. It makes exporting much slower, and the preview does not show it.'
+              : 'Slowed footage can stutter, since the phone filmed too few frames. This makes up the in-between frames when you export.'}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+const BRUSH_MIN = 0.01
+const BRUSH_MAX = 0.12
+
+function BrushSize ({ value, onChange }) {
+  return (
+    <label className="ed__panel-hint ed__vol ed__nogrow">
+      Pencil size
+      <input
+        type="range"
+        min={BRUSH_MIN * 1000}
+        max={BRUSH_MAX * 1000}
+        step="5"
+        value={Math.round(value * 1000)}
+        onChange={(e) => onChange(Number(e.target.value) / 1000)}
+        aria-label="Pencil size"
+      />
+    </label>
+  )
+}
+
+/**
+ * Blurring part of the picture. With nothing chosen it is the drawing tool:
+ * paint over what to hide, or drag a box or an oval. With a blur chosen it
+ * sets how strong it is, when it shows, and the spots it glides between
+ * when the thing it hides moves.
+ */
+export function BlurPanel ({ blur, draw, onDraw, total, t, onChange, onMark, onUnmark, onGo, onDelete, onDuplicate, onClose }) {
+  if (!blur) {
+    return (
+      <div className="ed__panel ed__panel--text">
+        <div className="ed__textrow">
+          <span className="ed__panel-label ed__nogrow">Blur</span>
+          {Object.entries(BLUR_SHAPES).map(([k, label]) => (
+            <Choice key={k} on={draw.shape === k} onClick={() => onDraw({ shape: k })}>{label}</Choice>
+          ))}
+          {draw.shape === 'pencil' ? <BrushSize value={draw.size} onChange={(size) => onDraw({ size })} /> : null}
+          <span className="ed__grow" />
+          <button className="ed__go" onClick={onClose}>Cancel</button>
+        </div>
+        <p className="ed__panel-hint">
+          {draw.shape === 'pencil'
+            ? 'Paint over what you want hidden on the picture. Let go and it is blurred from here to the end; drag its ends on the timeline to change that.'
+            : 'Drag a ' + (draw.shape === 'oval' ? 'circle' : 'box') + ' over what you want hidden on the picture.'}
+        </p>
+      </div>
+    )
+  }
+  const moving = Boolean(blur.moving)
+  const inside = t >= blur.start - 1e-6 && t < blur.end
+  return (
+    <div className="ed__panel ed__panel--text">
+      <div className="ed__textrow">
+        <span className="ed__panel-label ed__nogrow">Blur</span>
+        <label className="ed__panel-hint ed__vol ed__nogrow">
+          Strength
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value={Math.round((blur.strength ?? 0.5) * 100)}
+            onChange={(e) => onChange({ strength: Number(e.target.value) / 100 }, 'blur-strength:' + blur.id)}
+            aria-label="Blur strength"
+          />
+        </label>
+        {blur.shape === 'pencil' ? (
+          <>
+            <Choice on={draw.more} onClick={() => onDraw({ more: !draw.more })} title="Paint over more of the picture to hide it too">Paint more</Choice>
+            {draw.more ? <BrushSize value={draw.size} onChange={(size) => onDraw({ size })} /> : null}
+          </>
+        ) : (
+          ['box', 'oval'].map((k) => <Choice key={k} on={blur.shape === k} onClick={() => onChange({ shape: k })}>{BLUR_SHAPES[k]}</Choice>)
+        )}
+        <span className="ed__grow" />
+        <button className="ed__ghost" onClick={onDuplicate}>Duplicate</button>
+        <button className="ed__ghost" onClick={onDelete}>Delete</button>
+        <button className="ed__go" onClick={onClose}>Done</button>
+      </div>
+      <div className="ed__textrow">
+        <TimeBox label="Shows from" value={blur.start} onCommit={(v) => onChange({ start: Math.min(Math.max(v, 0), blur.end - 0.2) })} />
+        <span className="ed__panel-hint ed__nogrow">to</span>
+        <TimeBox label="Shows until" value={blur.end} onCommit={(v) => onChange({ end: Math.max(Math.min(v, total), blur.start + 0.2) })} />
+        <span className="ed__panel-sep" />
+        <span className="ed__panel-label ed__nogrow">{moving ? 'Glides between' : 'Stays in place'}</span>
+        {moving ? blur.spots.map((s, i) => (
+          <span key={i} className="chip chip--spot">
+            <button className="chip__go" onClick={() => onGo(blur.start + s.t)} title="Go to this spot">{formatClock(blur.start + s.t, true)}</button>
+            <button className="chip__x" onClick={() => onUnmark(i)} aria-label={'Remove the spot at ' + formatClock(blur.start + s.t, true)}>×</button>
+          </span>
+        )) : null}
+        <button className="ed__ghost" onClick={onMark} disabled={!inside} title={inside ? 'Mark where the blur is at this moment' : 'Move the playhead over the blur first'}>+ Mark a spot here</button>
+      </div>
+      <p className="ed__panel-hint">
+        {!inside
+          ? 'The playhead is outside this blur; move it over the blur to see and move it.'
+          : moving
+            ? 'Play to where the thing has moved, pause, and drag the blur onto it: a spot is marked there and the blur glides between spots.'
+            : 'Drag the blur on the picture to move it, or a corner to size it. If the thing moves, mark a spot here, then play on and drag the blur to follow it.'}
+      </p>
     </div>
   )
 }
