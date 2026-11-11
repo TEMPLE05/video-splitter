@@ -10,7 +10,7 @@
  * export results must always come from the live server.
  */
 
-const CACHE = 'video-splitter-v9'
+const CACHE = 'video-splitter-v10'
 
 const SHELL = [
   '/',

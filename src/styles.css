@@ -15,6 +15,9 @@
   --edge: rgba(255, 255, 255, 0.16);
   --edge-hi: rgba(255, 255, 255, 0.32);
   --blur: blur(28px) saturate(180%);
+  /* Smoked glass, for glass that sits over playing video in numbers. */
+  --smoke: linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.03) 60%), rgba(16, 18, 22, 0.62);
+  --smoke-hi: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.06) 60%), rgba(24, 27, 32, 0.72);
   --lift: 0 8px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 
   --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
@@ -328,9 +331,11 @@ kbd {
   padding: 0 18px 0 7px;
   border: 1px solid var(--edge);
   border-radius: 999px;
-  background: var(--glass);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
+  /* Smoked glass rather than frosted: a dark tint with a lit top edge. A
+     backdrop blur on every bubble re-blurs the playing video behind each one
+     every frame, which on built-in laptop graphics took the page from 57 to
+     37 frames a second with 54 buckets. */
+  background: var(--smoke);
   box-shadow: var(--lift);
   color: var(--text);
   font: inherit;
@@ -339,7 +344,7 @@ kbd {
   transition: transform 0.18s var(--ease), background 0.18s, border-color 0.18s;
 }
 .bubble:hover:not(:disabled) {
-  background: var(--glass-hi);
+  background: var(--smoke-hi);
   border-color: var(--edge-hi);
   transform: translateY(-2px);
 }
