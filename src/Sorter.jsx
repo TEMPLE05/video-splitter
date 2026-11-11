@@ -425,33 +425,38 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
         })}
 
         {!finding && state.buckets.length > 9 ? (
-          <button className="bubble bubble--find" onClick={() => setFinding(true)} title="Find a bucket by name (F)">
-            <span className="bubble__key">F</span> Find
-          </button>
+          <div className="bubblewrap">
+            <button className="bubble bubble--find" onClick={() => setFinding(true)} title="Find a bucket by name (F)">
+              <span className="bubble__key">F</span> Find
+            </button>
+          </div>
         ) : null}
 
-        {adding ? (
-          <form className="bubble bubble--form" onSubmit={addBucket}>
-            <input
-              ref={draftRef}
-              className="bubble__input"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => { if (!draft.trim()) setAdding(false) }}
-              placeholder="Bucket name"
-              aria-label="New bucket name"
-            />
-            <button className="bubble__go" type="submit" disabled={!draft.trim() || busy}
-              aria-label="Create bucket">
-              <Check size={14} />
+        {/* Every bubble sits in a wrapper: the hover look is the wrapper's. */}
+        <div className="bubblewrap">
+          {adding ? (
+            <form className="bubble bubble--form" onSubmit={addBucket}>
+              <input
+                ref={draftRef}
+                className="bubble__input"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={() => { if (!draft.trim()) setAdding(false) }}
+                placeholder="Bucket name"
+                aria-label="New bucket name"
+              />
+              <button className="bubble__go" type="submit" disabled={!draft.trim() || busy}
+                aria-label="Create bucket">
+                <Check size={14} />
+              </button>
+            </form>
+          ) : (
+            <button className="bubble bubble--add" onClick={() => setAdding(true)}
+              title="New bucket">
+              <Plus size={16} />
             </button>
-          </form>
-        ) : (
-          <button className="bubble bubble--add" onClick={() => setAdding(true)}
-            title="New bucket">
-            <Plus size={16} />
-          </button>
-        )}
+          )}
+        </div>
       </div>
 
       {error ? (

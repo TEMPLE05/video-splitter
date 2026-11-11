@@ -343,12 +343,17 @@ kbd {
   cursor: pointer;
   transition: transform 0.18s var(--ease), background 0.18s, border-color 0.18s;
 }
-.bubble:hover:not(:disabled) {
+/* The hover belongs to the wrapper, which stays put. Hovering the bubble
+   itself lifted it 2px out from under a pointer resting on its bottom edge,
+   which un-hovered it, dropped it back, hovered it again: a bubble that
+   shook and blinked, easiest to hit in a small window where the bubbles are
+   34px tall and packed close. */
+.bubblewrap:hover > .bubble:not(:disabled) {
   background: var(--smoke-hi);
   border-color: var(--edge-hi);
   transform: translateY(-2px);
 }
-.bubble:active:not(:disabled) { transform: translateY(0) scale(0.97); }
+.bubblewrap > .bubble:active:not(:disabled) { transform: translateY(0) scale(0.97); }
 .bubble:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .bubble__key {
@@ -376,7 +381,7 @@ kbd {
   justify-content: center;
   color: var(--dim);
 }
-.bubble--add:hover { color: #fff; }
+.bubblewrap:hover > .bubble--add { color: #fff; }
 
 .bubble--form { padding: 0 6px 0 14px; gap: 6px; }
 .bubble__input {
@@ -1138,8 +1143,8 @@ kbd {
 
 /* Promoted only while actually moving, so 39 idle bubbles do not each hold a
    compositor layer. */
-.bubble:hover:not(:disabled)::before,
-.bubble:hover:not(:disabled)::after {
+.bubblewrap:hover > .bubble:not(:disabled)::before,
+.bubblewrap:hover > .bubble:not(:disabled)::after {
   will-change: transform;
 }
 
@@ -1153,11 +1158,11 @@ kbd {
   );
 }
 
-.bubble:hover:not(:disabled)::before {
+.bubblewrap:hover > .bubble:not(:disabled)::before {
   opacity: 1;
   animation: glass-drift 5.5s ease-in-out infinite;
 }
-.bubble:hover:not(:disabled)::after {
+.bubblewrap:hover > .bubble:not(:disabled)::after {
   opacity: 1;
   animation: glass-sheen 2.8s ease-in-out infinite;
 }
