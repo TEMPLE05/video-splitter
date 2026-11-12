@@ -1192,6 +1192,45 @@ async function statSource (id) {
   }
 }
 
+/* ------------------------------------------------------- start with Windows */
+
+// The same shortcut "Start with Windows.bat" makes: wscript.exe running
+// start-hidden.vbs from the Startup folder, so the server comes up quietly
+// at login. The set-up window turns it on and off.
+const STARTUP_LNK = process.platform === 'win32' && process.env.APPDATA
+  ? path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Video Splitter server.lnk')
+  : null
+const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'"
+
+app.get('/api/startup', wrap(async (_req, res) => {
+  res.json({ supported: Boolean(STARTUP_LNK), on: Boolean(STARTUP_LNK && fs.existsSync(STARTUP_LNK)) })
+}))
+
+app.post('/api/startup', wrap(async (req, res) => {
+  if (!STARTUP_LNK) throw httpError(400, 'Starting with the computer is only set up for Windows')
+  const on = Boolean(req.body && req.body.on)
+  if (!on) {
+    await fsp.rm(STARTUP_LNK, { force: true })
+    res.json({ supported: true, on: false })
+    return
+  }
+  const script = [
+    '$ws = New-Object -ComObject WScript.Shell',
+    '$s = $ws.CreateShortcut(' + psQuote(STARTUP_LNK) + ')',
+    "$s.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'",
+    "$s.Arguments = '\"' + " + psQuote(path.join(ROOT, 'start-hidden.vbs')) + " + '\"'",
+    '$s.WorkingDirectory = ' + psQuote(ROOT),
+    '$s.IconLocation = ' + psQuote(path.join(ROOT, 'assets', 'icon.ico') + ',0'),
+    "$s.Description = 'Runs the Video Splitter server in the background'",
+    '$s.Save()'
+  ].join('; ')
+  const { code, stderr } = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script])
+  if (code !== 0 || !fs.existsSync(STARTUP_LNK)) {
+    throw httpError(500, 'Could not make the start-up shortcut' + (stderr ? ': ' + String(stderr).trim().split('\n')[0] : ''))
+  }
+  res.json({ supported: true, on: true })
+}))
+
 /* ------------------------------------------------------------------ frames */
 
 const FRAME_DIR = path.join(CACHE_DIR, 'frames')

@@ -135,3 +135,8 @@ export const getProject = (id) => request('/api/projects/' + encodeURIComponent(
 export const saveProject = (id, edit, extra) => request('/api/projects/' + encodeURIComponent(id), json('PUT', { edit, extra }))
 
 export const deleteProject = (id) => request('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' })
+
+// Start with Windows: the Startup-folder shortcut, on or off.
+export const getStartup = () => request('/api/startup')
+
+export const setStartup = (on) => request('/api/startup', json('POST', { on }))

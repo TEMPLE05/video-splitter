@@ -3,6 +3,7 @@ import Sorter from './Sorter.jsx'
 import Library from './Library.jsx'
 import Editor from './Editor.jsx'
 import SourcePicker from './SourcePicker.jsx'
+import Setup from './Setup.jsx'
 import { getState } from './api.js'
 
 // Roughly twenty seconds of polling. At login the installed app window and the
@@ -15,6 +16,8 @@ const GAP_MS = 800
 export default function App () {
   const [state, setState] = useState(null)
   const [picking, setPicking] = useState(false)
+  // The set-up window, asked for by ?setup; it also opens itself on a first run.
+  const [setup, setSetup] = useState(() => new URLSearchParams(window.location.search).has('setup'))
   const [view, setView] = useState({ name: 'sort' })
   const [error, setError] = useState(null)
   const [waiting, setWaiting] = useState(true)
@@ -84,7 +87,21 @@ export default function App () {
     )
   }
 
-  if (!state.sourceDir || picking) {
+  if (!state.sourceDir || setup) {
+    return (
+      <Setup
+        state={state}
+        onState={setState}
+        onDone={() => {
+          setSetup(false)
+          setView({ name: 'sort' })
+          if (window.location.search) window.history.replaceState(null, '', window.location.pathname)
+        }}
+      />
+    )
+  }
+
+  if (picking) {
     return (
       <SourcePicker
         current={state.sourceDir}
