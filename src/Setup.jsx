@@ -148,7 +148,7 @@ export default function Setup ({ state, onState, onDone }) {
           <div className="setup__brand">
             <img src="/icon-192.png" alt="" width="44" height="44" />
             <strong>Video Splitter</strong>
-            <span>Your phone videos, sorted and cut. On this computer; nothing is uploaded.</span>
+            <span>Every clip you saved, finally in order.<br />Sort the pile. Cut the good ones.</span>
           </div>
         </aside>
 
