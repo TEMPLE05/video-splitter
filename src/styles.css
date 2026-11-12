@@ -2027,13 +2027,29 @@ kbd {
   background-size: cover;
   background-position: center;
 }
-.setup__art::after {
-  content: '';
+/* The picture sits in the lower left, over the gradient and under the name,
+   melting into the gradient along its top and right edges. */
+.setup__photo {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 88%;
+  height: 62%;
+  object-fit: cover;
+  object-position: top center;
+  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent), linear-gradient(to right, #000 72%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to top, #000 55%, transparent), linear-gradient(to right, #000 72%, transparent);
+  mask-composite: intersect;
+}
+.setup__scrim {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0.1) 55%, transparent);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.3) 40%, transparent 68%);
+  pointer-events: none;
 }
-.setup__brand { position: absolute; left: 24px; right: 24px; bottom: 24px; display: flex; flex-direction: column; gap: 8px; }
+.setup__sound { position: absolute; top: 14px; right: 14px; z-index: 2; }
+.setup__brand { position: absolute; left: 24px; right: 24px; bottom: 24px; z-index: 2; display: flex; flex-direction: column; gap: 8px; }
 .setup__brand img { width: 44px; height: 44px; margin-bottom: 4px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5); }
 .setup__brand strong { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .setup__brand span { color: var(--dim); font-size: 13px; line-height: 1.5; }
@@ -2057,6 +2073,12 @@ kbd {
 .setup__perks span { color: var(--faint); font-size: 13px; line-height: 1.5; }
 .setup__hint { margin: auto 0 0; padding-top: 22px; color: var(--faint); font-size: 12.5px; }
 .setup__error { margin: 12px 0 0; color: var(--bad); font-size: 13px; }
+
+/* A quiet line at the foot of the Shortcuts sheet: where to send ideas. */
+.sheet__about { margin: 16px 0 0; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); color: var(--faint); font-size: 12px; line-height: 1.55; }
+.sheet__about a { color: var(--dim); text-decoration: none; border-bottom: 1px solid rgba(255, 255, 255, 0.18); }
+.sheet__about a:hover { color: var(--text); border-color: var(--edge-hi); }
+.sheet__about + .sheet__foot { margin-top: 10px; padding-top: 0; border-top: 0; }
 
 .setup__choices { display: flex; flex-direction: column; gap: 10px; }
 .setup__choices .choice { flex-direction: row; align-items: center; gap: 14px; padding: 12px 16px; }

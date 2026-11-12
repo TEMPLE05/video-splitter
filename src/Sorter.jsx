@@ -508,6 +508,10 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
                 </div>
               ))}
             </dl>
+            <p className="sheet__about">
+              Video Splitter is open source. Ideas, bugs, or want to build on it together?{' '}
+              <a href="https://github.com/TEMPLE05/video-splitter" target="_blank" rel="noreferrer">github.com/TEMPLE05/video-splitter</a>
+            </p>
             <p className="sheet__foot" title={state.sourceDir}>{state.sourceDir}</p>
           </div>
         </div>

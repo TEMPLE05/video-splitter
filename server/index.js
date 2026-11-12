@@ -1192,6 +1192,23 @@ async function statSource (id) {
   }
 }
 
+/* ------------------------------------------------------------------ brand */
+
+// The set-up window's own picture and sound: whatever is dropped into the
+// assets folder as setup.jpg/.png/.webp and setup.mp3/.wav/.ogg/.m4a. Read
+// on each request, so swapping the file needs no restart.
+const BRAND_DIR = process.env.VIDEOSPLITTER_BRAND || path.join(ROOT, 'assets')
+const BRAND = { picture: ['.jpg', '.jpeg', '.png', '.webp'], sound: ['.mp3', '.wav', '.ogg', '.m4a'] }
+
+app.get('/api/brand/:kind', wrap(async (req, res) => {
+  const exts = BRAND[req.params.kind]
+  if (!exts) throw httpError(404, 'Not a thing')
+  const file = exts.map((e) => path.join(BRAND_DIR, 'setup' + e)).find((f) => fs.existsSync(f))
+  if (!file) throw httpError(404, 'None provided')
+  res.set('Cache-Control', 'private, max-age=60')
+  res.sendFile(file)
+}))
+
 /* ------------------------------------------------------- start with Windows */
 
 // The same shortcut "Start with Windows.bat" makes: wscript.exe running

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import SourcePicker from './SourcePicker.jsx'
-import { Back, Captions, Check, Download, Film, Folder, Replay, Scissors } from './icons.jsx'
+import { Back, Captions, Check, Download, Film, Folder, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
 import { captionsStatus, getStartup, installCaptions, setStartup as saveStartup } from './api.js'
 
 const STEPS = ['Welcome', 'Videos', 'Captions', 'Finish']
@@ -26,6 +26,11 @@ export default function Setup ({ state, onState, onDone }) {
   const [error, setError] = useState(null)
   const [boot, setBoot] = useState(null) // { supported, on }: the Startup-folder shortcut
   const [copied, setCopied] = useState(false)
+  // The picture and sound from the assets folder, if there are any.
+  const [photo, setPhoto] = useState(true)
+  const [sound, setSound] = useState(true)
+  const [muted, setMuted] = useState(() => { try { return localStorage.getItem('vs.setupSound') === 'off' } catch { return false } })
+  const soundRef = useRef(null)
   const installPrompt = window.__installPrompt || null
   const standalone = window.matchMedia('(display-mode: standalone)').matches
 
@@ -54,6 +59,21 @@ export default function Setup ({ state, onState, onDone }) {
   useEffect(() => {
     getStartup().then(setBoot).catch(() => setBoot({ supported: false, on: false }))
   }, [])
+
+  // The sound plays as the window opens where the browser allows it (the
+  // installed app does); elsewhere it waits for the first press.
+  function chime () {
+    const a = soundRef.current
+    if (a && sound && !muted && a.paused) a.play().catch(() => { /* needs a press first */ })
+  }
+  useEffect(() => { chime() }, [sound]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggleMute () {
+    const m = !muted
+    setMuted(m)
+    try { localStorage.setItem('vs.setupSound', m ? 'off' : 'on') } catch { /* no storage */ }
+    if (m && soundRef.current) soundRef.current.pause()
+  }
 
   async function toggleBoot (on) {
     setError(null)
@@ -103,7 +123,7 @@ export default function Setup ({ state, onState, onDone }) {
   // The main button's job on this step.
   const waitingForModel = step === 2 && pick && pick !== 'later' && !ready(pick)
   const action = step === 0
-    ? { label: 'Get started', go: next }
+    ? { label: 'Get started', go: () => { chime(); next() } }
     : step === 2
       ? (waitingForModel
           ? { label: installing ? 'Downloading…' : 'Download', go: download, disabled: installing || !caps }
@@ -117,6 +137,14 @@ export default function Setup ({ state, onState, onDone }) {
       <div className="setup__card">
         <aside className="setup__side">
           <div className="setup__art" />
+          {photo ? <img className="setup__photo" src="/api/brand/picture" alt="" onError={() => setPhoto(false)} /> : null}
+          <div className="setup__scrim" />
+          {sound ? <audio ref={soundRef} src="/api/brand/sound" preload="auto" onError={() => setSound(false)} /> : null}
+          {sound ? (
+            <button className="ctl setup__sound" onClick={toggleMute} aria-label={muted ? 'Sound is off' : 'Sound is on'} title={muted ? 'Turn the sound on' : 'Turn the sound off'}>
+              {muted ? <VolumeOff size={16} /> : <VolumeOn size={16} />}
+            </button>
+          ) : null}
           <div className="setup__brand">
             <img src="/icon-192.png" alt="" width="44" height="44" />
             <strong>Video Splitter</strong>
