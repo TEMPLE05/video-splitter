@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "video-splitter": {
+      "command": "node",
+      "args": ["server/mcp.js"]
+    }
+  }
+}

@@ -1192,6 +1192,45 @@ async function statSource (id) {
   }
 }
 
+/* ------------------------------------------------------------------ frames */
+
+const FRAME_DIR = path.join(CACHE_DIR, 'frames')
+
+/**
+ * One still frame from a moment in a clip, for the MCP tools (server/mcp.js)
+ * to look at what is on screen. `t` is seconds in, `w` the width wanted.
+ * Kept on disk like the thumbnails, so asking again costs nothing.
+ */
+app.get('/api/frame/:id', wrap(async (req, res) => {
+  if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
+  const { file, st } = await statSource(req.params.id)
+  const t = Math.max(0, Number(req.query.t) || 0)
+  const w = Math.min(Math.max(Math.round(Number(req.query.w) || 640), 64), 1920)
+  const key = cacheKey('frame-v1-' + t.toFixed(2) + '-' + w, file, st)
+  const out = path.join(FRAME_DIR, key.slice(0, 2), key + '.jpg')
+  if (!fs.existsSync(out)) {
+    await fsp.mkdir(path.dirname(out), { recursive: true })
+    const tmp = out + '.' + process.pid + '.' + Date.now() + '.tmp.jpg'
+    const { code, stderr } = await run('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', t.toFixed(3), '-i', file,
+      '-frames:v', '1', '-an', '-sn',
+      '-vf', "scale='min(" + w + ",iw)':-2",
+      '-q:v', '4', '-update', '1', tmp
+    ])
+    let made = false
+    try { made = code === 0 && (await fsp.stat(tmp)).size > 0 } catch { made = false }
+    if (!made) {
+      await fsp.rm(tmp, { force: true })
+      throw httpError(400, 'No frame at ' + t.toFixed(1) + ' s' + (stderr ? ': ' + String(stderr).trim().split('\n').pop() : ''))
+    }
+    await fsp.rename(tmp, out)
+  }
+  res.set('Cache-Control', 'private, max-age=31536000, immutable')
+  res.type('image/jpeg')
+  sendStream(fs.createReadStream(out), res)
+}))
+
 app.get('/api/strip/:id', wrap(async (req, res) => {
   if (!(await haveTools())) throw httpError(503, 'FFmpeg is not installed or not on PATH')
   const { file, st } = await statSource(req.params.id)

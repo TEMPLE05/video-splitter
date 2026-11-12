@@ -524,6 +524,35 @@ the edit: lines in pieces you cut out disappear, and the rest move with their
 pieces. Picture subtitles from Blu-ray or DVD rips cannot go into an mp4 and
 are left out.
 
+## Driving it from Claude Code
+
+Video Splitter can be driven by Claude Code: you say what you want done
+("file the last ten clips into the right buckets", "cut the quiet starts off
+every clip in dragons and export them small", "caption this one and put a
+title on it") and Claude does it through the app, so the result shows up in
+the library and the editor as if you had clicked it yourself.
+
+This works through MCP, a standard way for a program to offer its actions to
+an AI assistant. `server/mcp.js` offers sixteen: see what is waiting and what
+is in each bucket, file a clip, look at frames from a clip, get a transcript
+with the quiet stretches marked, read and set a clip's edit (cuts, speeds,
+transitions, texts, sounds, look), add captions, export, and forget an edit.
+It does nothing the app itself cannot do, and never touches the video files
+directly.
+
+To turn it on, open the Video Splitter folder in Claude Code (it reads the
+`.mcp.json` there and asks once whether to allow the server) and have the app
+running. Then just ask. Claude works from the transcript and from frames it
+pulls out, not by watching the video, so "cut where nobody is talking" works
+better than "cut to the funniest bit"; look at what it did before you post it.
+
+Texts, captions and blurs are drawn by the editor in the browser, so an export
+asked for through Claude leaves them out and says so. Export those from the
+app, or ask for the captions as a .srt file beside the video.
+
+If the app runs on another port, add `"env": { "VIDEOSPLITTER_URL": "http://127.0.0.1:PORT" }`
+to the server's entry in `.mcp.json`.
+
 ## Safety
 
 - Filing moves files, never copies, and never overwrites. A name collision
@@ -575,6 +604,7 @@ server/library.js     Recycle Bin, moving clips between buckets, tidying up
 server/fonts.js       Fonts imported for text
 server/projects.js    Projects: videos started from pictures, kept in .edits/projects
 server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
+server/mcp.js         The app's actions as MCP tools, for Claude Code
 src/Projects.jsx      Project cards and the New project window
 src/App.jsx           Switches between sorting, library and editor
 src/Sorter.jsx        The sorting screen, owns its keyboard handling
