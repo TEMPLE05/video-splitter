@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import SourcePicker from './SourcePicker.jsx'
-import { Back, Captions, Check, Download, Film, Folder, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
+import { Back, Captions, Check, Download, Film, Folder, Lock, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
 import { captionsStatus, getStartup, installCaptions, setStartup as saveStartup } from './api.js'
 
 const STEPS = ['Welcome', 'Videos', 'Captions', 'Finish']
@@ -189,16 +189,16 @@ export default function Setup ({ state, onState, onDone }) {
               <>
                 <h1 className="setup__title">Welcome to Video Splitter</h1>
                 <p className="setup__lead">
-                  Sort the videos you save from your phone into folders, cut and caption
-                  the good ones, and export them for anywhere. Everything happens on this
-                  computer. Nothing is uploaded.
+                  The clips pile up. Video Splitter puts them into folders you can find
+                  them in, and gives you an editor for the ones worth sharing.
                 </p>
                 <ul className="setup__perks">
-                  <li><Folder size={20} /><div><strong>Sort</strong><span>Watch each video and press a bucket. It moves into that folder.</span></div></li>
-                  <li><Scissors size={20} /><div><strong>Cut</strong><span>Trim, split, speed up, add text, blur, transitions and music.</span></div></li>
-                  <li><Captions size={20} /><div><strong>Caption</strong><span>Captions from the speech, worked out offline, translated if you like.</span></div></li>
+                  <li><Folder size={20} /><div><strong>Sort the pile</strong><span>Watch each clip and press a folder. One key per video.</span></div></li>
+                  <li><Scissors size={20} /><div><strong>Cut the good ones</strong><span>Trim, split, change speed, add text, music, blur and transitions.</span></div></li>
+                  <li><Captions size={20} /><div><strong>Caption them</strong><span>Written from the speech, and translated when you need it.</span></div></li>
+                  <li><Lock size={20} /><div><strong>Kept on this computer</strong><span>Nothing is uploaded, and there is no account to make.</span></div></li>
                 </ul>
-                <p className="setup__hint">Set-up takes about a minute. You can change any of it later.</p>
+                <p className="setup__hint">Set-up takes about a minute, and you can change any of it later.</p>
               </>
             ) : null}
 
