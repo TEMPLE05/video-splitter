@@ -272,7 +272,23 @@ export default function Setup ({ state, onState, onDone }) {
             {step === 3 ? (
               <>
                 <h1 className="setup__title">Finishing touches</h1>
-                <p className="setup__lead">Three optional extras. To change them later, press ? and choose Set-up window.</p>
+                <p className="setup__lead">Three optional extras. To change them later, press ? and choose Set‑up window.</p>
+                {/* What the earlier steps settled, in one glance before finishing. */}
+                <ul className="setup__summary">
+                  <li title={state.sourceDir || ''}>
+                    <Check size={14} />
+                    <span>Videos from <strong>{state.sourceDir ? state.sourceDir.split(/[\\/]/).filter(Boolean).pop() : 'no folder yet'}</strong></span>
+                  </li>
+                  <li>
+                    <Check size={14} />
+                    <span>{(() => {
+                      const have = Object.keys(MODELS).filter(ready).map((k) => MODELS[k].name)
+                      return have.length
+                        ? <>Captions ready: <strong>{have.join(' and ')}</strong></>
+                        : <>Captions download the first time you use them</>
+                    })()}</span>
+                  </li>
+                </ul>
                 <div className="setup__rows">
                   <div className="setup__row">
                     <Film size={20} />

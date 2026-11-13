@@ -2187,11 +2187,20 @@ kbd {
 .setup .picker__card { flex: 1; width: 100%; max-height: none; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; overflow: visible; min-height: 0; }
 .setup .current { display: none; }
 .setup .picker header { display: none; }
-.setup .picker__manual { margin-top: 0; }
-.setup .browser { margin-top: 12px; grid-template-rows: minmax(0, 1fr); }
+/* In the set-up window, Places and the folder list come first, since most
+   people click their way there; typing a path is the fallback underneath. */
+.setup .browser { order: 1; margin-top: 0; grid-template-rows: minmax(0, 1fr); }
+.setup .picker__manual { order: 2; margin-top: 12px; }
+.setup .picker__manual .picker__input { height: 36px; font-size: 13px; }
+.setup .picker__manual .pill { height: 36px; }
 .setup .places { min-height: 0; }
+.setup__summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: -4px 0 18px; padding: 10px 14px; border: 1px solid var(--edge); border-radius: 14px; background: rgba(255, 255, 255, 0.03); list-style: none; color: var(--dim); font-size: 12.5px; }
+.setup__summary li { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.setup__summary li > svg { flex: none; color: var(--accent); }
+.setup__summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup__summary strong { color: var(--text); font-weight: 500; }
 .setup .listing { min-height: 120px; }
-.setup .picker__foot { margin-top: 12px; }
+.setup .picker__foot { order: 3; margin-top: 12px; }
 
 @media (max-width: 760px) {
   .setup { padding: 12px; }

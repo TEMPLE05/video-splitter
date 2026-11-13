@@ -56,6 +56,7 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
   async function make (key, file, hevcOk) {
     const job = jobs.get(key)
     job.state = 'making'
+    job.started = Date.now()
     const info = await probeCodecs(file)
     if (!info || !info.video) throw new Error('This file has no picture FFmpeg can read')
     // Already H.264 in 8-bit 4:2:0, or HEVC when the browser asking can
@@ -100,7 +101,9 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
     if (ready.has(key)) return { state: 'ready', progress: 1 }
     const j = jobs.get(key)
     if (!j) return { state: 'none', progress: 0 }
-    return { state: j.state, progress: j.progress || 0, repack: j.repack, error: j.error, ahead: j.state === 'waiting' ? line.findIndex((x) => x.key === key) + (running ? 1 : 0) : 0 }
+    // Time left, once enough is done to judge the pace.
+    const left = j.state === 'making' && j.progress > 0.02 ? Math.round((Date.now() - j.started) / 1000 * (1 - j.progress) / j.progress) : null
+    return { state: j.state, progress: j.progress || 0, left, repack: j.repack, error: j.error, ahead: j.state === 'waiting' ? line.findIndex((x) => x.key === key) + (running ? 1 : 0) : 0 }
   }
 
   async function locate (id) {
