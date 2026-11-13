@@ -51,7 +51,11 @@ export const hasCopy = (id) => withCopy.has(id)
 export const videoUrl = (id) => (withCopy.has(id) ? '/api/preview/' : '/api/video/') + encodeURIComponent(id)
 
 export const previewStatus = (id) => request('/api/preview/' + encodeURIComponent(id) + '/status')
-export const makePreview = (id) => request('/api/preview/' + encodeURIComponent(id), { method: 'POST' })
+// Whether this browser decodes HEVC, so an HEVC .mkv only needs repackaging.
+const decodesHevc = (() => {
+  try { return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"') } catch { return false }
+})()
+export const makePreview = (id) => request('/api/preview/' + encodeURIComponent(id), json('POST', { hevc: decodesHevc }))
 
 /**
  * Makes (or finds) the playable copy and waits for it, reporting progress on

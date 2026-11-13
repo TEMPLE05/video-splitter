@@ -53,16 +53,18 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
     })
   }
 
-  async function make (key, file) {
+  async function make (key, file, hevcOk) {
     const job = jobs.get(key)
     job.state = 'making'
     const info = await probeCodecs(file)
     if (!info || !info.video) throw new Error('This file has no picture FFmpeg can read')
-    // Already H.264 in 8-bit 4:2:0: only the packaging is wrong, so copy it.
-    const repack = info.video === 'h264' && (!info.pix || info.pix === 'yuv420p' || info.pix === 'yuvj420p')
+    // Already H.264 in 8-bit 4:2:0, or HEVC when the browser asking can
+    // decode it (it said so): only the packaging is wrong, so copy it.
+    const eightBit = !info.pix || info.pix === 'yuv420p' || info.pix === 'yuvj420p'
+    const repack = eightBit && (info.video === 'h264' || (info.video === 'hevc' && hevcOk))
     job.repack = repack
     const video = repack
-      ? ['-c:v', 'copy']
+      ? ['-c:v', 'copy', ...(info.video === 'hevc' ? ['-tag:v', 'hvc1'] : [])]
       : ['-vf', "scale='if(gte(iw,ih),-2,min(720,iw))':'if(gte(iw,ih),min(720,ih),-2)'", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p']
     const audio = !info.audio ? ['-an'] : info.audio === 'aac' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '160k']
     await fsp.mkdir(DIR, { recursive: true })
@@ -86,9 +88,9 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
 
   function pump () {
     if (running || !line.length) return
-    const { key, file } = line.shift()
+    const { key, file, hevcOk } = line.shift()
     running = key
-    make(key, file)
+    make(key, file, hevcOk)
       .then(() => { jobs.delete(key) })
       .catch((err) => { const j = jobs.get(key); if (j) { j.state = 'failed'; j.error = err.message } })
       .finally(() => { running = null; pump() })
@@ -118,7 +120,7 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
     const j = jobs.get(key)
     if (!ready.has(key) && (!j || j.state === 'failed')) {
       jobs.set(key, { state: 'waiting', progress: 0 })
-      line.push({ key, file })
+      line.push({ key, file, hevcOk: Boolean(req.body && req.body.hevc) })
       pump()
     }
     res.json(status(key))
