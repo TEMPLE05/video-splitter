@@ -474,6 +474,7 @@ kbd {
   animation: slip 0.22s var(--ease);
 }
 .toast strong { color: var(--text); font-weight: 600; }
+.toast--arrived { padding-right: 16px; }
 .toast svg { color: var(--accent); flex: none; }
 .toast__undo {
   padding: 5px 13px;

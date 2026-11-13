@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Sorter from './Sorter.jsx'
 import Library from './Library.jsx'
 import Editor from './Editor.jsx'
 import SourcePicker from './SourcePicker.jsx'
 import Setup from './Setup.jsx'
-import { getState } from './api.js'
+import { getState, onArrivals } from './api.js'
+
+const byName = new Intl.Collator(undefined, { numeric: true }).compare
 
 // Roughly twenty seconds of polling. At login the installed app window and the
 // server start at the same moment, and the window usually wins, so giving up
@@ -22,6 +24,8 @@ export default function App () {
   const [error, setError] = useState(null)
   const [waiting, setWaiting] = useState(true)
   const [attempt, setAttempt] = useState(0)
+  // The last batch of videos that arrived in the folder, for the sorter's note.
+  const [arrivals, setArrivals] = useState({ seq: 0, n: 0, first: null })
 
   // Which library folder you were in and how far down. Held here because the
   // library unmounts while the editor is open, and keeping it inside the
@@ -53,6 +57,33 @@ export default function App () {
     tryOnce()
     return () => { cancelled = true; if (timer) clearTimeout(timer) }
   }, [attempt])
+
+  // Videos landing in the folder join the queue as they arrive. After a
+  // reconnect (the server restarted, say) the queue is checked for any that
+  // came in meanwhile.
+  const ready = Boolean(state && state.sourceDir)
+  const stateRef = useRef(state)
+  stateRef.current = state
+  useEffect(() => {
+    if (!ready) return
+    let first = true
+    // The new queue and the note go out in one update, so the sorter sees
+    // both at once and can keep the video on screen where it is.
+    const merge = (items) => {
+      const s = stateRef.current
+      if (!s || !items.length) return
+      const have = new Set(s.queue.map((q) => q.id))
+      const added = items.filter((x) => !have.has(x.id))
+      if (!added.length) return
+      setState((now) => ({ ...now, queue: [...now.queue, ...added.filter((x) => !now.queue.some((q) => q.id === x.id))].sort((p, q) => byName(p.name, q.name)) }))
+      setArrivals((n) => ({ seq: n.seq + 1, n: added.length, first: added[0].name }))
+    }
+    const stop = onArrivals(merge, () => {
+      if (first) { first = false; return }
+      getState().then((s) => merge(s.queue)).catch(() => { /* next time */ })
+    })
+    return stop
+  }, [ready])
 
   if (!state && waiting) {
     return (
@@ -141,6 +172,7 @@ export default function App () {
     <Sorter
       state={state}
       onState={setState}
+      arrivals={arrivals}
       onChangeFolder={() => setPicking(true)}
       onLibrary={() => setView({ name: 'library' })}
     />

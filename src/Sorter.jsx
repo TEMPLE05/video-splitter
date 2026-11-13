@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
-import { Back, Check, Close, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
+import { Back, Check, Close, Download, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import { assign, createBucket, undo, videoUrl } from './api.js'
 
@@ -31,7 +31,7 @@ const SHORTCUTS = [
   ['?', 'This panel']
 ]
 
-export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
+export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLibrary }) {
   const [cursor, setCursor] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -74,6 +74,17 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
     const t = setTimeout(() => setToast(null), 3600)
     return () => clearTimeout(t)
   }, [toast])
+
+  // New videos landed in the folder. They are slotted into the queue by
+  // name, which can shift the one on screen, so the cursor follows it.
+  const shown = useRef(null)
+  useEffect(() => {
+    if (!arrivals || !arrivals.seq) return
+    const at = shown.current ? queue.findIndex((q) => q.id === shown.current) : -1
+    if (at >= 0 && at !== cursor) setCursor(at)
+    setToast({ arrived: arrivals.n, name: arrivals.first })
+  }, [arrivals && arrivals.seq]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { shown.current = current ? current.id : null })
 
   useEffect(() => {
     if (adding && draftRef.current) draftRef.current.focus()
@@ -466,7 +477,14 @@ export default function Sorter ({ state, onState, onChangeFolder, onLibrary }) {
         </div>
       ) : null}
 
-      {toast ? (
+      {toast && toast.arrived ? (
+        <div className="toast toast--arrived" role="status">
+          <Download size={15} />
+          <span>{toast.arrived === 1
+            ? <><strong>1 new video</strong> arrived</>
+            : <><strong>{toast.arrived} new videos</strong> arrived</>}</span>
+        </div>
+      ) : toast ? (
         <div className="toast" role="status">
           <Check size={15} />
           <span>Filed into <strong>{toast.bucket}</strong></span>

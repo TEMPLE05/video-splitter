@@ -7,6 +7,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
+import { mountArrivals } from './arrivals.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
@@ -287,6 +288,14 @@ app.get('/api/state', wrap(async (_req, res) => {
   res.json(await snapshot())
 }))
 
+// New videos arriving in the folder (LocalSend, a cable, a copy) join the
+// queue while the app is open: see server/arrivals.js.
+const arrivals = mountArrivals(app, {
+  getSourceDir: () => config.sourceDir,
+  isVideoName: (n) => VIDEO_EXT.has(path.extname(n).toLowerCase()),
+  queueEntry: (n) => queueEntry(n)
+})
+
 const isVideoName = (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())
 
 async function countVideos (dir) {
@@ -411,6 +420,7 @@ app.post('/api/source', wrap(async (req, res) => {
   config.buckets = []
   history.length = 0
   await saveConfig()
+  arrivals.rewatch()
   res.json(await snapshot())
 }))
 
@@ -421,6 +431,7 @@ app.delete('/api/source', wrap(async (_req, res) => {
   config.buckets = []
   history.length = 0
   await saveConfig()
+  arrivals.rewatch()
   res.json(await snapshot())
 }))
 

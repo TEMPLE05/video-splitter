@@ -169,6 +169,15 @@ buckets that match. The arrow keys choose between them and `Enter` files.
 Videos start muted, because browsers block autoplay with sound until you
 interact with the page. Press `M` once and sound stays on.
 
+### New videos while it is open
+
+Videos that land in the folder while the app is open, sent from your phone
+with LocalSend, copied over a cable or dropped in from Explorer, join the
+queue on their own, with a small "3 new videos arrived" note. The video you
+are watching stays on screen. A video still being sent is only added once it
+has fully arrived. For LocalSend, set its **Save to folder** on this PC to
+the same folder the app sorts.
+
 ### Changing or clearing the folder
 
 Click the folder button in the top right to open the picker again. The folder
@@ -604,6 +613,7 @@ server/library.js     Recycle Bin, moving clips between buckets, tidying up
 server/fonts.js       Fonts imported for text
 server/projects.js    Projects: videos started from pictures, kept in .edits/projects
 server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
+server/arrivals.js    Watches the folder so new videos join the queue as they land
 server/mcp.js         The app's actions as MCP tools, for Claude Code
 src/Projects.jsx      Project cards and the New project window
 src/App.jsx           Switches between sorting, library and editor

@@ -20,6 +20,14 @@ const json = (method, data) => ({
 
 export const getState = () => request('/api/state')
 
+/** New videos arriving in the folder, as they land. Returns a function that stops listening. */
+export function onArrivals (onArrived, onHello) {
+  const es = new EventSource('/api/events')
+  es.addEventListener('arrived', (e) => { try { onArrived(JSON.parse(e.data).items || []) } catch { /* malformed */ } })
+  es.addEventListener('hello', () => onHello())
+  return () => es.close()
+}
+
 export const browse = (dir) =>
   request('/api/browse' + (dir ? '?dir=' + encodeURIComponent(dir) : ''))
 
