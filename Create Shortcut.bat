@@ -15,16 +15,15 @@ if not exist "assets\icon.ico" (
     exit /b 1
 )
 
-rem The shortcut targets cmd.exe with the batch file as an argument rather
-rem than targeting the batch file directly. Windows refuses to pin a .bat, or
-rem a shortcut that points straight at one, but it will happily pin a shortcut
-rem to an executable. This is also what lets the shortcut carry a custom icon.
+rem The shortcut runs launch.vbs through wscript.exe: it starts the server if
+rem it is not running (with no console window), then opens the app. Targeting
+rem an executable is also what lets Windows pin it and show the icon.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ws = New-Object -ComObject WScript.Shell;" ^
   "$dir = '%~dp0'.TrimEnd('\');" ^
   "$lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'Video Splitter.lnk'));" ^
-  "$lnk.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe';" ^
-  "$lnk.Arguments = '/c \"\"' + (Join-Path $dir 'Video Splitter.bat') + '\"\"';" ^
+  "$lnk.TargetPath = Join-Path $env:SystemRoot 'System32\wscript.exe';" ^
+  "$lnk.Arguments = '\"' + (Join-Path $dir 'launch.vbs') + '\"';" ^
   "$lnk.WorkingDirectory = $dir;" ^
   "$lnk.IconLocation = (Join-Path $dir 'assets\icon.ico') + ',0';" ^
   "$lnk.Description = 'Sort and cut your saved videos';" ^
