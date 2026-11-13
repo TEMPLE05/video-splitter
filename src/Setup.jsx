@@ -68,7 +68,7 @@ export default function Setup ({ state, onState, onDone }) {
 
   useEffect(() => {
     for (const kind of ['startup', 'desktop-icon']) {
-      getShortcut(kind).catch(() => ({ supported: false, on: false })).then((v) => setLinks((l) => ({ ...l, [kind]: v })))
+      getShortcut(kind).catch(() => ({ stale: true, supported: false, on: false })).then((v) => setLinks((l) => ({ ...l, [kind]: v })))
     }
   }, [])
 
@@ -307,7 +307,9 @@ export default function Setup ({ state, onState, onDone }) {
                         {icon}
                         <div>
                           <strong>{title}</strong>
-                          <span>{v && !v.supported ? 'Only on Windows.' : text}</span>
+                          <span>{v && v.stale
+                            ? 'Restart Video Splitter to use this: the running server is older than this page.'
+                            : v && !v.supported ? 'Only on Windows.' : text}</span>
                         </div>
                         <label className="switch">
                           <input

@@ -1226,6 +1226,7 @@ const SHORTCUTS = {
   startup: {
     route: '/api/startup',
     script: 'start-hidden.vbs',
+    opens: ['start-hidden.vbs'],
     name: 'Video Splitter server.lnk',
     about: 'Runs the Video Splitter server in the background',
     dir: async () => process.env.APPDATA ? path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') : null
@@ -1233,6 +1234,9 @@ const SHORTCUTS = {
   desktop: {
     route: '/api/desktop-icon',
     script: 'launch.vbs',
+    // The older desktop shortcut ran Video Splitter.bat through cmd; it still
+    // starts the app, so it counts.
+    opens: ['launch.vbs', 'Video Splitter.bat'],
     name: 'Video Splitter.lnk',
     about: 'Sort and cut your saved videos',
     // Windows knows where the desktop really is (OneDrive can move it).
@@ -1247,25 +1251,50 @@ const SHORTCUTS = {
   }
 }
 
+/**
+ * Every shortcut in a folder that opens one of this app's scripts, whatever
+ * it is called: a renamed copy, "Video Splitter (2)", or an older kind of
+ * shortcut. Only this copy of the app counts, so the full path is matched.
+ * One PowerShell call reads them all.
+ */
+async function findLinks (dir, opens) {
+  if (!fs.existsSync(dir)) return []
+  const want = opens.map((f) => psQuote(path.join(ROOT, f).toLowerCase())).join(', ')
+  const script = [
+    '$ws = New-Object -ComObject WScript.Shell',
+    '$want = @(' + want + ')',
+    'Get-ChildItem -LiteralPath ' + psQuote(dir) + " -Filter '*.lnk' -File | ForEach-Object { " +
+      "$s = $ws.CreateShortcut($_.FullName); $line = ($s.TargetPath + ' ' + $s.Arguments).ToLower(); $hit = $false; " +
+      'foreach ($w in $want) { if ($line.Contains($w)) { $hit = $true } }; if ($hit) { $_.FullName } }'
+  ].join('; ')
+  const { code, stdout } = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script])
+  return code === 0 ? stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : []
+}
+
 for (const sc of Object.values(SHORTCUTS)) {
-  const lnkPath = async () => {
-    const dir = process.platform === 'win32' ? await sc.dir() : null
-    return dir ? path.join(dir, sc.name) : null
+  const folder = async () => (process.platform === 'win32' ? await sc.dir() : null)
+  // The one this app makes, if it is there; otherwise any that opens the app.
+  const present = async (dir) => {
+    const own = path.join(dir, sc.name)
+    return fs.existsSync(own) ? [own] : findLinks(dir, sc.opens)
   }
 
   app.get(sc.route, wrap(async (_req, res) => {
-    const lnk = await lnkPath()
-    res.json({ supported: Boolean(lnk), on: Boolean(lnk && fs.existsSync(lnk)) })
+    const dir = await folder()
+    res.json({ supported: Boolean(dir), on: Boolean(dir && (await present(dir)).length) })
   }))
 
   app.post(sc.route, wrap(async (req, res) => {
-    const lnk = await lnkPath()
-    if (!lnk) throw httpError(400, 'This is only set up for Windows')
+    const dir = await folder()
+    if (!dir) throw httpError(400, 'This is only set up for Windows')
+    const lnk = path.join(dir, sc.name)
     if (!(req.body && req.body.on)) {
-      await fsp.rm(lnk, { force: true })
+      // Off means every shortcut that opens the app, not only the one made here.
+      for (const f of new Set([lnk, ...(await findLinks(dir, sc.opens))])) await fsp.rm(f, { force: true })
       res.json({ supported: true, on: false })
       return
     }
+    if ((await present(dir)).length) { res.json({ supported: true, on: true }); return }
     const script = [
       '$ws = New-Object -ComObject WScript.Shell',
       '$s = $ws.CreateShortcut(' + psQuote(lnk) + ')',
