@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
-import { Back, Check, Close, Download, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
+import { Back, Check, Close, Download, Folder, Grid, Help, Phone, Plus, Skip, Undo } from './icons.jsx'
 import ConfirmRemove from './ConfirmRemove.jsx'
 import { assign, createBucket, findDupes, trashClips, undo, videoUrl } from './api.js'
 
@@ -31,7 +31,7 @@ const SHORTCUTS = [
   ['?', 'This panel']
 ]
 
-export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLibrary, onSetup }) {
+export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLibrary, onSetup, phoneOn, onPhone }) {
   const [cursor, setCursor] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -398,6 +398,12 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
             title="Open the library to edit sorted clips (L)" aria-label="Library">
             <Grid size={18} />
           </button>
+          {onPhone ? (
+            <button className={'ctl' + (phoneOn ? ' is-live' : '')} onClick={onPhone}
+              title={phoneOn ? 'Receiving from your phone is on' : 'Send from your phone'} aria-label="Send from your phone">
+              <Phone size={18} />
+            </button>
+          ) : null}
           <button className="ctl" onClick={() => setHelpOpen(true)}
             title="Keyboard shortcuts (?)" aria-label="Shortcuts">
             <Help size={18} />

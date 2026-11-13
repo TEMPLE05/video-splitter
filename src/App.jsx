@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import Sorter from './Sorter.jsx'
 import Library from './Library.jsx'
 import CopyGate from './CopyGate.jsx'
+import PhoneLayer from './Phone.jsx'
 import Editor from './Editor.jsx'
 import SourcePicker from './SourcePicker.jsx'
 import Setup from './Setup.jsx'
-import { getState, onArrivals } from './api.js'
+import { getState, getPhone, onArrivals } from './api.js'
 
 const byName = new Intl.Collator(undefined, { numeric: true }).compare
 
@@ -27,6 +28,9 @@ export default function App () {
   const [attempt, setAttempt] = useState(0)
   // The last batch of videos that arrived in the folder, for the sorter's note.
   const [arrivals, setArrivals] = useState({ seq: 0, n: 0, first: null })
+  // Receiving from a phone: the server's latest word, and the panel.
+  const [phone, setPhoneState] = useState(null)
+  const [phonePanel, setPhonePanel] = useState(false)
 
   // Which library folder you were in and how far down. Held here because the
   // library unmounts while the editor is open, and keeping it inside the
@@ -79,10 +83,12 @@ export default function App () {
       setState((now) => ({ ...now, queue: [...now.queue, ...added.filter((x) => !now.queue.some((q) => q.id === x.id))].sort((p, q) => byName(p.name, q.name)) }))
       setArrivals((n) => ({ seq: n.seq + 1, n: added.length, first: added[0].name }))
     }
+    getPhone().then(setPhoneState).catch(() => { /* an older server */ })
     const stop = onArrivals(merge, () => {
+      getPhone().then(setPhoneState).catch(() => { /* an older server */ })
       if (first) { first = false; return }
       getState().then((s) => merge(s.queue)).catch(() => { /* next time */ })
-    })
+    }, setPhoneState)
     return stop
   }, [ready])
 
@@ -145,6 +151,8 @@ export default function App () {
     )
   }
 
+  const layer = <PhoneLayer phone={phone} onPhone={setPhoneState} panel={phonePanel} onPanel={setPhonePanel} />
+
   if (view.name === 'edit') {
     const editor = (
       <Editor
@@ -155,16 +163,20 @@ export default function App () {
         onBack={() => setView({ name: 'library' })}
       />
     )
-    if (view.project) return editor
+    if (view.project) return <>{editor}{layer}</>
     return (
-      <CopyGate key={view.video.id} video={view.video} onBack={() => setView({ name: 'library' })}>
-        {editor}
-      </CopyGate>
+      <>
+        <CopyGate key={view.video.id} video={view.video} onBack={() => setView({ name: 'library' })}>
+          {editor}
+        </CopyGate>
+        {layer}
+      </>
     )
   }
 
   if (view.name === 'library') {
     return (
+      <>
       <Library
         state={state}
         onState={setState}
@@ -174,17 +186,24 @@ export default function App () {
         onOpenProject={(project, bucket) => setView({ name: 'edit', project, bucket })}
         onBack={() => setView({ name: 'sort' })}
       />
+      {layer}
+      </>
     )
   }
 
   return (
-    <Sorter
-      state={state}
-      onState={setState}
-      arrivals={arrivals}
-      onChangeFolder={() => setPicking(true)}
-      onLibrary={() => setView({ name: 'library' })}
-      onSetup={() => setSetup(true)}
-    />
+    <>
+      <Sorter
+        state={state}
+        onState={setState}
+        arrivals={arrivals}
+        onChangeFolder={() => setPicking(true)}
+        onLibrary={() => setView({ name: 'library' })}
+        onSetup={() => setSetup(true)}
+        phoneOn={Boolean(phone && phone.on)}
+        onPhone={phone ? () => setPhonePanel(true) : null}
+      />
+      {layer}
+    </>
   )
 }

@@ -23,13 +23,25 @@ export const getState = () => request('/api/state')
 /** Bucket videos identical to this one, under any name. */
 export const findDupes = (id) => request('/api/dupes/' + encodeURIComponent(id))
 
-/** New videos arriving in the folder, as they land. Returns a function that stops listening. */
-export function onArrivals (onArrived, onHello) {
+/**
+ * The server's live updates: new videos landing in the folder, and what a
+ * phone sending over LocalSend is doing. Returns a function that stops listening.
+ */
+export function onArrivals (onArrived, onHello, onPhone) {
   const es = new EventSource('/api/events')
   es.addEventListener('arrived', (e) => { try { onArrived(JSON.parse(e.data).items || []) } catch { /* malformed */ } })
   es.addEventListener('hello', () => onHello())
+  if (onPhone) es.addEventListener('phone', (e) => { try { onPhone(JSON.parse(e.data)) } catch { /* malformed */ } })
   return () => es.close()
 }
+
+// Receiving from a phone with LocalSend (server/localsend.js).
+export const getPhone = () => request('/api/phone')
+export const setPhone = (on) => request('/api/phone', json('POST', { on }))
+export const answerPhone = (id, accept, always) => request('/api/phone/answer', json('POST', { id, accept, always }))
+export const lookForPhones = () => request('/api/phone/look', { method: 'POST' })
+export const stopPhone = () => request('/api/phone/stop', { method: 'POST' })
+export const forgetPhone = (fingerprint) => request('/api/phone/trusted/' + encodeURIComponent(fingerprint), { method: 'DELETE' })
 
 export const browse = (dir) =>
   request('/api/browse' + (dir ? '?dir=' + encodeURIComponent(dir) : ''))

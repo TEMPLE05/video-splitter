@@ -153,6 +153,42 @@ are watching stays on screen. A video still being sent is only added once it
 has fully arrived. For LocalSend, set its **Save to folder** on this PC to
 the same folder the app sorts.
 
+### Sending from your phone
+
+The app can receive videos straight from your phone over the Wi-Fi, with the
+free [LocalSend](https://localsend.org) app on the phone (App Store or Google
+Play). No cable, no internet, and no LocalSend needed on the PC.
+
+1. Click the phone button in the sorter's top bar and switch on
+   **Receive with LocalSend**.
+2. On the phone, open LocalSend, pick the videos and choose
+   **Video Splitter (your PC's name)** from the devices.
+3. Press **Accept** on the PC. A bar in the corner shows the progress, and the
+   videos join the sorting queue as each one arrives.
+
+- Nothing arrives until you accept it. **Always accept from this phone** skips
+  the question for that phone from then on; the phone button's panel lists
+  those phones and can forget them.
+- Only videos are taken. Photos and other files in the same send are left
+  out, and the question says how many.
+- A name already in the folder becomes `clip (2).mp4`; nothing is
+  overwritten. A send larger than the free disk space is turned away.
+- The first time, Windows asks whether Node.js may use your networks. Choose
+  **Allow** for private networks, or the phone cannot reach the PC.
+- If the LocalSend app is also running on this PC, close it: both use the
+  same port.
+
+How it is kept safe: the transfer is encrypted (HTTPS, LocalSend's own
+protocol). The PC listens for phones on a separate port that serves only
+LocalSend's five requests, so the rest of the app is never reachable from the
+network, and requests from outside your local network are refused. Phones are
+recognised by the certificate they present, not by their name, so another
+device cannot pass itself off as a phone you always accept. Each file needs a
+one-time token, has to come from the phone that asked, and has to match the
+size (and checksum, when the phone sends one) it announced. Files are written
+under a temporary name and only appear once complete. The switch stays as you
+left it after a restart.
+
 ### Changing or clearing the folder
 
 Click the folder button in the top right to open the picker again. The folder
@@ -599,6 +635,8 @@ server/projects.js    Projects: videos started from pictures, kept in .edits/pro
 server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
 server/dupes.js       Finds the same video already in a bucket, whatever its name
 server/arrivals.js    Watches the folder so new videos join the queue as they land
+server/localsend.js   Receives videos from a phone over LocalSend
+server/localsend-cert.js  The PC's LocalSend certificate, made once
 server/previews.js    Playable copies of videos the browser cannot play
 server/mcp.js         The app's actions as MCP tools, for Claude Code
 src/Projects.jsx      Project cards and the New project window

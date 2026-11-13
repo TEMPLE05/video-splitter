@@ -2204,3 +2204,44 @@ kbd {
   .setup__steps { gap: 12px; margin-bottom: 16px; }
   .setup__title { font-size: 20px; }
 }
+
+/* ---------------------------------------------- receiving from a phone */
+
+.ctl.is-live { position: relative; }
+.ctl.is-live::after { content: ''; position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: #81c995; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.6); }
+
+.phone { width: min(460px, 100%); }
+.phone__switch { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--edge); border-radius: 14px; background: rgba(255, 255, 255, 0.03); }
+.phone__switch > div { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.phone__switch strong { font-weight: 500; }
+.phone__switch span { color: var(--dim); font-size: 12.5px; line-height: 1.45; }
+.phone__steps { margin: 16px 0 0; padding-left: 20px; color: var(--dim); font-size: 13px; line-height: 1.6; }
+.phone__steps li { margin-bottom: 4px; }
+.phone__steps strong, .phone__seen strong, .phone__note strong { color: var(--text); font-weight: 550; }
+.phone__seen { margin: 12px 0 0; color: var(--dim); font-size: 12.5px; line-height: 1.5; }
+.phone__link { padding: 0; border: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.18); background: none; color: var(--dim); font: inherit; cursor: pointer; }
+.phone__link:hover:not(:disabled) { color: var(--text); border-color: var(--edge-hi); }
+.phone__trusted { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; color: var(--dim); font-size: 12.5px; }
+.phone__chip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 10px; border: 1px solid var(--edge); border-radius: 999px; color: var(--text); }
+.phone__chip button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--dim); cursor: pointer; }
+.phone__chip button:hover { background: rgba(255, 255, 255, 0.12); color: var(--text); }
+.phone__note { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); color: var(--faint); font-size: 12px; line-height: 1.55; }
+
+.phone--ask { text-align: left; }
+.phone__from { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 12px; border-radius: 14px; background: rgba(138, 180, 248, 0.14); color: var(--accent); }
+.phone--ask .sheet__title { margin-bottom: 6px; line-height: 1.35; }
+.phone__names { margin: 10px 0 0; padding: 10px 14px; border-radius: 12px; background: rgba(255, 255, 255, 0.04); list-style: none; color: var(--text); font-size: 12.5px; line-height: 1.7; }
+.phone__names li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phone__more { color: var(--faint); }
+.phone__always { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--dim); font-size: 13px; cursor: pointer; }
+.phone__always input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+
+.phonebar { position: fixed; top: 60px; right: 16px; z-index: 9; display: flex; align-items: center; gap: 12px; width: min(340px, calc(100vw - 32px)); padding: 10px 8px 10px 14px; border: 1px solid var(--edge); border-radius: 16px; background: var(--smoke); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); box-shadow: var(--lift); color: var(--dim); font-size: 12.5px; animation: slip 0.22s var(--ease); }
+.phonebar > svg { flex: none; color: var(--accent); }
+.phonebar__text { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.phonebar__text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phonebar strong { color: var(--text); font-weight: 550; }
+.phonebar__bar { height: 4px; margin-top: 4px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, 0.1); }
+.phonebar__bar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s; }
+.phonebar--done { width: auto; max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: 999px; }
+.phonebar--done svg { flex: none; color: #81c995; }
