@@ -577,7 +577,7 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
             </p>
             {onSetup ? (
               <p className="sheet__about sheet__again">
-                <button type="button" onClick={() => { setHelpOpen(false); onSetup() }}>Open the set-up window again</button>
+                <button type="button" onClick={() => { setHelpOpen(false); onSetup() }}>Set-up window</button>
               </p>
             ) : null}
             <p className="sheet__foot" title={state.sourceDir}>{state.sourceDir}</p>
