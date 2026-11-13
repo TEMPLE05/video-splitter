@@ -31,6 +31,7 @@ export default function Setup ({ state, onState, onDone }) {
   const [sound, setSound] = useState(true)
   const [muted, setMuted] = useState(() => { try { return localStorage.getItem('vs.setupSound') === 'off' } catch { return false } })
   const soundRef = useRef(null)
+  const [playing, setPlaying] = useState(false)
   const installPrompt = window.__installPrompt || null
   const standalone = window.matchMedia('(display-mode: standalone)').matches
 
@@ -72,11 +73,22 @@ export default function Setup ({ state, onState, onDone }) {
   }
   useEffect(() => { chime() }, [sound]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function toggleMute () {
-    const m = !muted
-    setMuted(m)
-    try { localStorage.setItem('vs.setupSound', m ? 'off' : 'on') } catch { /* no storage */ }
-    if (m && soundRef.current) soundRef.current.pause()
+  // The speaker button: while the sound plays it stops it (and keeps it off
+  // next time); once it has finished, or when it was off, it plays it again
+  // from the start.
+  function remember (off) {
+    setMuted(off)
+    try { localStorage.setItem('vs.setupSound', off ? 'off' : 'on') } catch { /* no storage */ }
+  }
+  function pressSound () {
+    const a = soundRef.current
+    if (!a) return
+    if (playing) { a.pause(); remember(true); return }
+    if (muted) remember(false)
+    a.currentTime = 0
+    a.volume = 0.6
+    played.current = true
+    a.play().catch(() => {})
   }
 
   async function toggleBoot (on) {
@@ -145,10 +157,15 @@ export default function Setup ({ state, onState, onDone }) {
           <div className="setup__scrim" />
           {/* Goes with the picture in assets/setup.jpg; change it if the picture changes. */}
           {photo ? <small className="setup__credit">Photo of Lionel Messi. Video Splitter is not affiliated with or endorsed by him.</small> : null}
-          {sound ? <audio ref={soundRef} src="/api/brand/sound" preload="auto" onError={() => setSound(false)} /> : null}
+          {sound ? <audio ref={soundRef} src="/api/brand/sound" preload="auto" onError={() => setSound(false)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} /> : null}
           {sound ? (
-            <button className="ctl setup__sound" onClick={toggleMute} aria-label={muted ? 'Sound is off' : 'Sound is on'} title={muted ? 'Turn the sound on' : 'Turn the sound off'}>
-              {muted ? <VolumeOff size={16} /> : <VolumeOn size={16} />}
+            <button
+              className={'ctl setup__sound' + (playing ? ' is-playing' : '')}
+              onClick={pressSound}
+              aria-label={playing ? 'Stop the sound' : muted ? 'Sound is off, play it' : 'Play the sound again'}
+              title={playing ? 'Stop the sound' : muted ? 'Sound is off. Press to play it' : 'Play it again'}
+            >
+              {playing ? <VolumeOn size={16} /> : muted ? <VolumeOff size={16} /> : <Replay size={16} />}
             </button>
           ) : null}
           <div className="setup__brand">
