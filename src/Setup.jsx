@@ -6,8 +6,8 @@ import { captionsStatus, getStartup, installCaptions, setStartup as saveStartup 
 const STEPS = ['Welcome', 'Videos', 'Captions', 'Finish']
 
 const MODELS = {
-  base: { name: 'Quick', size: '148 MB', note: 'Good for clear speech. About a minute of work for every ten minutes of video.' },
-  small: { name: 'Better', size: '488 MB', note: 'Catches more words and accents, and translates other languages into English better. About three times slower.' }
+  base: { name: 'Quick', size: '148 MB', note: 'Good for clear speech. About a minute to caption ten minutes of video.' },
+  small: { name: 'Better', size: '488 MB', note: 'Catches more words and accents, and translates better. About three times slower.' }
 }
 
 const WINGET = 'winget install Gyan.FFmpeg'
@@ -145,7 +145,7 @@ export default function Setup ({ state, onState, onDone }) {
           ? { label: installing ? 'Downloading…' : 'Download', go: download, disabled: installing || !caps }
           : { label: 'Next', go: next })
       : step === 3
-        ? { label: 'Done', go: onDone, disabled: !state.sourceDir, title: state.sourceDir ? undefined : 'Choose a videos folder first' }
+        ? { label: 'Start sorting', go: onDone, disabled: !state.sourceDir, title: state.sourceDir ? undefined : 'Choose a videos folder first' }
         : null
 
   return (
@@ -204,10 +204,10 @@ export default function Setup ({ state, onState, onDone }) {
 
             {step === 1 ? (
               <>
-                <h1 className="setup__title">Where are your videos?</h1>
+                <h1 className="setup__title">Choose your videos folder</h1>
                 <p className="setup__lead">
-                  Point at the folder you copy phone videos into. Buckets are made as
-                  folders inside it, and nothing is moved anywhere else.
+                  Pick the folder your phone videos land in. The folders you sort into
+                  are made inside it, and nothing ever leaves it.
                 </p>
                 <SourcePicker current={state.sourceDir} onPicked={(s) => { onState(s); next() }} onCancel={null} />
               </>
@@ -215,11 +215,11 @@ export default function Setup ({ state, onState, onDone }) {
 
             {step === 2 ? (
               <>
-                <h1 className="setup__title">Captions and translation</h1>
+                <h1 className="setup__title">Get captions ready</h1>
                 <p className="setup__lead">
-                  Captions are worked out by a speech program on this computer, so they
-                  work offline and nothing is uploaded. It is a one-time download. Speech
-                  in another language can be translated into English.
+                  Captions are written by a speech program that runs on this computer, so
+                  they work offline. It is a one-time download, and speech in other
+                  languages can be translated into English.
                 </p>
                 <div className="setup__choices" role="radiogroup" aria-label="Captions download">
                   {Object.entries(MODELS).map(([k, m]) => (
@@ -242,7 +242,7 @@ export default function Setup ({ state, onState, onDone }) {
                     onClick={() => setPick('later')}
                     disabled={installing}
                   >
-                    <div><strong>Later</strong><span>Downloads the first time you press Captions in the editor.</span></div>
+                    <div><strong>Later</strong><span>It downloads the first time you press Captions in the editor.</span></div>
                   </button>
                 </div>
                 {installing && caps?.install ? (
@@ -257,7 +257,7 @@ export default function Setup ({ state, onState, onDone }) {
             {step === 3 ? (
               <>
                 <h1 className="setup__title">Finishing touches</h1>
-                <p className="setup__lead">Three things that make it feel like a proper app. All optional, all changeable later.</p>
+                <p className="setup__lead">Three optional extras. To change them later, press ? and choose Set-up window.</p>
                 <div className="setup__rows">
                   <div className="setup__row">
                     <Film size={20} />
@@ -267,8 +267,8 @@ export default function Setup ({ state, onState, onDone }) {
                         : <b className="setup__badge setup__badge--no">Not found</b>}
                       </strong>
                       <span>{state.tools
-                        ? 'It plays, cuts and exports the video. Nothing to do.'
-                        : <>Needed to play, cut and export. Install it from a terminal with <code>{WINGET}</code>, then start the app again.</>}
+                        ? 'Cuts and exports your videos. Already installed.'
+                        : <>Needed to cut and export. Install it from a terminal with <code>{WINGET}</code>, then restart the app.</>}
                       </span>
                     </div>
                     {!state.tools ? <button className="pill pill--sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button> : null}
@@ -278,10 +278,10 @@ export default function Setup ({ state, onState, onDone }) {
                     <div>
                       <strong>Install as an app</strong>
                       <span>{standalone
-                        ? 'Done: this is the installed app.'
+                        ? 'Already installed. You are in the app now.'
                         : installPrompt
-                          ? 'Its own window and a taskbar icon, no browser bar.'
-                          : 'Its own window and a taskbar icon. Open the browser menu (⋮) and choose Install Video Splitter.'}
+                          ? 'Its own window and taskbar icon, without the browser around it.'
+                          : 'Its own window and taskbar icon. Open the browser menu (⋮) and choose Install Video Splitter.'}
                       </span>
                     </div>
                     {standalone
@@ -292,7 +292,7 @@ export default function Setup ({ state, onState, onDone }) {
                     <Replay size={20} />
                     <div>
                       <strong>Start with Windows</strong>
-                      <span>{boot && !boot.supported ? 'Only on Windows.' : 'Ready the moment you log in, quietly in the background.'}</span>
+                      <span>{boot && !boot.supported ? 'Only on Windows.' : 'Starts quietly in the background when you sign in, so the app opens instantly.'}</span>
                     </div>
                     <label className="switch">
                       <input
