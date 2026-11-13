@@ -1212,44 +1212,77 @@ app.get('/api/brand/:kind', wrap(async (req, res) => {
   res.sendFile(file)
 }))
 
-/* ------------------------------------------------------- start with Windows */
+/* -------------------------------------------------------- Windows shortcuts */
 
-// The same shortcut "Start with Windows.bat" makes: wscript.exe running
-// start-hidden.vbs from the Startup folder, so the server comes up quietly
-// at login. The set-up window turns it on and off.
-const STARTUP_LNK = process.platform === 'win32' && process.env.APPDATA
-  ? path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Video Splitter server.lnk')
-  : null
+// Two shortcuts the set-up window can switch on and off. Both run a script
+// through wscript.exe, so no console window ever shows:
+//  - startup: start-hidden.vbs from the Startup folder, so the server comes
+//    up quietly at login (what "Start with Windows.bat" makes);
+//  - desktop: launch.vbs from the desktop, which starts the server if it is
+//    not running and then opens the app (what "Create Shortcut.bat" makes).
 const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'"
-
-app.get('/api/startup', wrap(async (_req, res) => {
-  res.json({ supported: Boolean(STARTUP_LNK), on: Boolean(STARTUP_LNK && fs.existsSync(STARTUP_LNK)) })
-}))
-
-app.post('/api/startup', wrap(async (req, res) => {
-  if (!STARTUP_LNK) throw httpError(400, 'Starting with the computer is only set up for Windows')
-  const on = Boolean(req.body && req.body.on)
-  if (!on) {
-    await fsp.rm(STARTUP_LNK, { force: true })
-    res.json({ supported: true, on: false })
-    return
+let desktopDir = null
+const SHORTCUTS = {
+  startup: {
+    route: '/api/startup',
+    script: 'start-hidden.vbs',
+    name: 'Video Splitter server.lnk',
+    about: 'Runs the Video Splitter server in the background',
+    dir: async () => process.env.APPDATA ? path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') : null
+  },
+  desktop: {
+    route: '/api/desktop-icon',
+    script: 'launch.vbs',
+    name: 'Video Splitter.lnk',
+    about: 'Sort and cut your saved videos',
+    // Windows knows where the desktop really is (OneDrive can move it).
+    dir: async () => {
+      if (process.env.VIDEOSPLITTER_DESKTOP) return process.env.VIDEOSPLITTER_DESKTOP
+      if (desktopDir === null) {
+        const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', "[Environment]::GetFolderPath('Desktop')"])
+        desktopDir = r.code === 0 ? r.stdout.trim() : ''
+      }
+      return desktopDir || null
+    }
   }
-  const script = [
-    '$ws = New-Object -ComObject WScript.Shell',
-    '$s = $ws.CreateShortcut(' + psQuote(STARTUP_LNK) + ')',
-    "$s.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'",
-    "$s.Arguments = '\"' + " + psQuote(path.join(ROOT, 'start-hidden.vbs')) + " + '\"'",
-    '$s.WorkingDirectory = ' + psQuote(ROOT),
-    '$s.IconLocation = ' + psQuote(path.join(ROOT, 'assets', 'icon.ico') + ',0'),
-    "$s.Description = 'Runs the Video Splitter server in the background'",
-    '$s.Save()'
-  ].join('; ')
-  const { code, stderr } = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script])
-  if (code !== 0 || !fs.existsSync(STARTUP_LNK)) {
-    throw httpError(500, 'Could not make the start-up shortcut' + (stderr ? ': ' + String(stderr).trim().split('\n')[0] : ''))
+}
+
+for (const sc of Object.values(SHORTCUTS)) {
+  const lnkPath = async () => {
+    const dir = process.platform === 'win32' ? await sc.dir() : null
+    return dir ? path.join(dir, sc.name) : null
   }
-  res.json({ supported: true, on: true })
-}))
+
+  app.get(sc.route, wrap(async (_req, res) => {
+    const lnk = await lnkPath()
+    res.json({ supported: Boolean(lnk), on: Boolean(lnk && fs.existsSync(lnk)) })
+  }))
+
+  app.post(sc.route, wrap(async (req, res) => {
+    const lnk = await lnkPath()
+    if (!lnk) throw httpError(400, 'This is only set up for Windows')
+    if (!(req.body && req.body.on)) {
+      await fsp.rm(lnk, { force: true })
+      res.json({ supported: true, on: false })
+      return
+    }
+    const script = [
+      '$ws = New-Object -ComObject WScript.Shell',
+      '$s = $ws.CreateShortcut(' + psQuote(lnk) + ')',
+      "$s.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'",
+      "$s.Arguments = '\"' + " + psQuote(path.join(ROOT, sc.script)) + " + '\"'",
+      '$s.WorkingDirectory = ' + psQuote(ROOT),
+      '$s.IconLocation = ' + psQuote(path.join(ROOT, 'assets', 'icon.ico') + ',0'),
+      '$s.Description = ' + psQuote(sc.about),
+      '$s.Save()'
+    ].join('; ')
+    const { code, stderr } = await run('powershell', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script])
+    if (code !== 0 || !fs.existsSync(lnk)) {
+      throw httpError(500, 'Could not make the shortcut' + (stderr ? ': ' + String(stderr).trim().split('\n')[0] : ''))
+    }
+    res.json({ supported: true, on: true })
+  }))
+}
 
 /* ------------------------------------------------------------------ frames */
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import SourcePicker from './SourcePicker.jsx'
 import { Back, Captions, Check, Close, Download, Film, Folder, Lock, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
-import { captionsStatus, getStartup, installCaptions, setStartup as saveStartup } from './api.js'
+import { captionsStatus, getShortcut, installCaptions, setShortcut } from './api.js'
 
 const STEPS = ['Welcome', 'Videos', 'Captions', 'Finish']
 
@@ -24,7 +24,8 @@ export default function Setup ({ state, onState, onDone }) {
   const [pick, setPick] = useState(null)
   const [installing, setInstalling] = useState(false)
   const [error, setError] = useState(null)
-  const [boot, setBoot] = useState(null) // { supported, on }: the Startup-folder shortcut
+  // The two Windows shortcuts, each { supported, on } once asked.
+  const [links, setLinks] = useState({})
   const [copied, setCopied] = useState(false)
   // The picture and sound from the assets folder, if there are any.
   const [photo, setPhoto] = useState(true)
@@ -32,8 +33,6 @@ export default function Setup ({ state, onState, onDone }) {
   const [muted, setMuted] = useState(() => { try { return localStorage.getItem('vs.setupSound') === 'off' } catch { return false } })
   const soundRef = useRef(null)
   const [playing, setPlaying] = useState(false)
-  const installPrompt = window.__installPrompt || null
-  const standalone = window.matchMedia('(display-mode: standalone)').matches
 
   // Once a videos folder is chosen the window can be closed at any step
   // (the X, or Escape); on the very first run there is nothing to go back to.
@@ -68,7 +67,9 @@ export default function Setup ({ state, onState, onDone }) {
   }, [installing])
 
   useEffect(() => {
-    getStartup().then(setBoot).catch(() => setBoot({ supported: false, on: false }))
+    for (const kind of ['startup', 'desktop-icon']) {
+      getShortcut(kind).catch(() => ({ supported: false, on: false })).then((v) => setLinks((l) => ({ ...l, [kind]: v })))
+    }
   }, [])
 
   // The sound plays as the window opens where the browser allows it (the
@@ -101,10 +102,11 @@ export default function Setup ({ state, onState, onDone }) {
     a.play().catch(() => {})
   }
 
-  async function toggleBoot (on) {
+  async function toggleLink (kind, on) {
     setError(null)
     try {
-      setBoot(await saveStartup(on))
+      const v = await setShortcut(kind, on)
+      setLinks((l) => ({ ...l, [kind]: v }))
     } catch (err) {
       setError(err.message)
     }
@@ -128,13 +130,6 @@ export default function Setup ({ state, onState, onDone }) {
     } catch (err) {
       setError(err.message)
     }
-  }
-
-  async function installApp () {
-    if (!installPrompt) return
-    installPrompt.prompt()
-    try { await installPrompt.userChoice } catch { /* dismissed */ }
-    window.__installPrompt = null
   }
 
   function copy () {
@@ -302,38 +297,31 @@ export default function Setup ({ state, onState, onDone }) {
                     </div>
                     {!state.tools ? <button className="pill pill--sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button> : null}
                   </div>
-                  <div className="setup__row">
-                    <Download size={20} />
-                    <div>
-                      <strong>Install as an app</strong>
-                      <span>{standalone
-                        ? 'Already installed. You are in the app now.'
-                        : installPrompt
-                          ? 'Its own window and taskbar icon, without the browser around it.'
-                          : 'Its own window and taskbar icon. Open the browser menu (⋮) and choose Install Video Splitter.'}
-                      </span>
-                    </div>
-                    {standalone
-                      ? <b className="setup__badge"><Check size={13} /> Installed</b>
-                      : installPrompt ? <button className="pill pill--sm" onClick={installApp}>Install</button> : null}
-                  </div>
-                  <div className="setup__row">
-                    <Replay size={20} />
-                    <div>
-                      <strong>Start with Windows</strong>
-                      <span>{boot && !boot.supported ? 'Only on Windows.' : 'Starts quietly in the background when you sign in, so the app opens instantly.'}</span>
-                    </div>
-                    <label className="switch">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(boot && boot.on)}
-                        disabled={!boot || !boot.supported}
-                        onChange={(e) => toggleBoot(e.target.checked)}
-                        aria-label="Start with Windows"
-                      />
-                      <i />
-                    </label>
-                  </div>
+                  {[
+                    { kind: 'desktop-icon', icon: <Download size={20} />, title: 'Desktop icon', text: 'One click starts Video Splitter and opens it in its own window.' },
+                    { kind: 'startup', icon: <Replay size={20} />, title: 'Start with Windows', text: 'Starts quietly in the background when you sign in, so the app opens instantly.' }
+                  ].map(({ kind, icon, title, text }) => {
+                    const v = links[kind]
+                    return (
+                      <div className="setup__row" key={kind}>
+                        {icon}
+                        <div>
+                          <strong>{title}</strong>
+                          <span>{v && !v.supported ? 'Only on Windows.' : text}</span>
+                        </div>
+                        <label className="switch">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(v && v.on)}
+                            disabled={!v || !v.supported}
+                            onChange={(e) => toggleLink(kind, e.target.checked)}
+                            aria-label={title}
+                          />
+                          <i />
+                        </label>
+                      </div>
+                    )
+                  })}
                 </div>
               </>
             ) : null}

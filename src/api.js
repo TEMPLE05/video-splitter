@@ -202,6 +202,8 @@ export const saveProject = (id, edit, extra) => request('/api/projects/' + encod
 export const deleteProject = (id) => request('/api/projects/' + encodeURIComponent(id), { method: 'DELETE' })
 
 // Start with Windows: the Startup-folder shortcut, on or off.
-export const getStartup = () => request('/api/startup')
+// The two Windows shortcuts the set-up window switches: 'startup' (the
+// server starts at login) and 'desktop-icon' (one click starts and opens it).
+export const getShortcut = (kind) => request('/api/' + kind)
 
-export const setStartup = (on) => request('/api/startup', json('POST', { on }))
+export const setShortcut = (kind, on) => request('/api/' + kind, json('POST', { on }))

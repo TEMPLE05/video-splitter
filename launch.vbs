@@ -46,10 +46,33 @@ If Not Answers() Then
   End If
 End If
 
-' The installed app if there is one (its own window), else the browser.
+' Opens the app in a window of its own, with no browser bar: the installed
+' Chrome app if someone made one, else Chrome or Edge in app mode (which needs
+' nothing installed), else a tab in whatever the default browser is.
+Function BrowserExe(name)
+  Dim hive, found
+  BrowserExe = ""
+  On Error Resume Next
+  For Each hive In Array("HKCU", "HKLM")
+    found = shell.RegRead(hive & "\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" & name & "\")
+    If Err.Number = 0 And found <> "" Then
+      If fso.FileExists(found) Then BrowserExe = found
+    End If
+    Err.Clear
+    If BrowserExe <> "" Then Exit For
+  Next
+  On Error GoTo 0
+End Function
+
 app = shell.SpecialFolders("Programs") & "\Chrome Apps\Video Splitter.lnk"
 If port = "5174" And fso.FileExists(app) Then
   shell.Run """" & app & """", 1, False
 Else
-  shell.Run url, 1, False
+  app = BrowserExe("chrome.exe")
+  If app = "" Then app = BrowserExe("msedge.exe")
+  If app <> "" Then
+    shell.Run """" & app & """ --app=" & url, 1, False
+  Else
+    shell.Run url, 1, False
+  End If
 End If

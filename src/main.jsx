@@ -3,13 +3,6 @@ import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
 import './styles.css'
 
-// Chrome offers to install the app once, early on; the offer is kept for
-// the set-up window's Install button.
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault()
-  window.__installPrompt = e
-})
-
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />

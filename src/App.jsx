@@ -107,9 +107,11 @@ export default function App () {
           read your videos. Shutting down your PC stops it.
         </p>
         <p className="boot__text">
-          Double-click <strong>Video Splitter</strong> on your desktop, then press
-          Retry. To skip this every time, run <strong>Start with Windows</strong>
-          once and it will start on its own from now on.
+          Double-click <strong>Video Splitter</strong> on your desktop, which
+          starts it, then press Retry. No icon there? Run{' '}
+          <strong>Create Shortcut.bat</strong> in the app's folder once. To skip
+          this for good, switch on <strong>Start with Windows</strong> in the
+          set-up window.
         </p>
         <button className="pill pill--solid" onClick={() => setAttempt((a) => a + 1)}>
           Retry

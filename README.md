@@ -29,78 +29,44 @@ browser. Leave the black window open while you work. Closing it stops the app.
 Double-click it again while it is already running and it just reopens the tab
 rather than complaining about a busy port.
 
-### A desktop shortcut and a taskbar pin
+### The desktop icon
 
-Double-click **`Create Shortcut.bat`** once. It puts a **Video Splitter**
-shortcut on your desktop with the app's own icon.
+Switch on **Desktop icon** on the last page of the set-up window, or
+double-click **`Create Shortcut.bat`** once. Either puts a **Video Splitter**
+icon on your desktop. One click on it starts the server if it is not already
+running, with no console window, and opens the app in a window of its own
+with no tabs or address bar (Chrome or Edge in app mode; nothing to install).
 
-To pin it, right-click that shortcut and choose **Pin to taskbar**. On Windows
-11 you may need **Show more options** first. **Pin to Start** works the same
-way.
+To pin it, right-click the icon and choose **Pin to taskbar**. On Windows 11
+you may need **Show more options** first. Windows blocks pinning from a
+script, so that right-click is yours to do.
 
-Windows will not pin a `.bat` file, and it will not pin a shortcut that points
-straight at one either. That is why the shortcut targets `cmd.exe` and passes
-the batch file as an argument: to Windows it is then a shortcut to a program,
-which it is willing to pin and which can carry a custom icon.
-
-Windows 11 also blocks pinning to the taskbar from a script, so that last
-right-click is yours to do. Nothing can automate it.
+The icon runs `launch.vbs` through `wscript.exe`. Windows will not pin a
+script directly, but it will pin a shortcut to a program, and that also lets
+the shortcut carry the app's icon.
 
 ### Starting it automatically
 
 The server does not survive a restart, so after shutting down your PC the app
 icon will report that it is not running. Double-click **`Start with Windows.bat`**
-once and the server starts quietly at every login from then on, with no console
+once (or switch on **Start with Windows** in the set-up window) and the server starts quietly at every login from then on, with no console
 window. Run it again to turn that back off.
 
 To stop the server without rebooting, double-click **`Stop Video Splitter.bat`**.
 It only stops the process holding this app's port, so other Node programs are
 left alone.
 
-### Installing it as an app
+### Installing it as a browser app (optional)
 
-Once it is running, open the browser menu and choose **Install Video Splitter**
-(Edge calls it "Install this site as an app"). It then gets its own window with
-no tabs or address bar, its own icon, and a proper Start menu entry that pins
-cleanly.
+You do not need this: the desktop icon already opens the app in its own
+window. If you still want a Start menu entry made by the browser, open the
+browser menu and choose **Install Video Splitter** (Edge: "Install this site
+as an app").
 
-The server still has to be running for it to do anything. Launch it the usual
-way first. If you open the installed app on its own, it will tell you the
-server is not running and offer a Retry button rather than showing a browser
-error page.
-
-If the Install option does not appear straight away, that is the browser, not
-the app. Edge and Chrome wait until you have actually used a page before
-offering to install it. You do not have to wait: open the browser menu and pick
-Install directly.
-
-Installing needs Edge or Chrome. Firefox does not support installing desktop
-web apps. On a Mac, Safari calls it Add to Dock.
-
-The first launch installs dependencies, which is the one step that needs
-internet. After that it runs offline.
-
-### Running it from a terminal
-
-Works on any platform, and is the only route on macOS and Linux.
-
-```bash
-npm install     # first time only, needs internet
-npm start       # build once, then serve everything from 5174
-npm run dev     # hot reload: API on 5174, interface on 5173
-```
-
-Then open http://127.0.0.1:5174 (or 5173 in dev).
-
-### Requirements
-
-- **Node.js**, from https://nodejs.org. The launcher checks for it and tells
-  you if it is missing.
-- **FFmpeg** on your PATH, only for cutting and removing audio. Sorting works
-  without it, and the launcher warns rather than refusing to start. Get it from
-  https://ffmpeg.org, or on Windows with `winget install Gyan.FFmpeg`.
-- **Windows** for the double-click launcher and the shortcut. Everything else
-  is platform independent.
+That browser icon is only a window. A web page is not allowed to start a
+program, so it cannot start the server: opened while the server is stopped,
+it says the app is not running and offers Retry. The desktop icon is the one
+that starts everything.
 
 ## Working offline
 
