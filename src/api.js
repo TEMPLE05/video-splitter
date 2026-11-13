@@ -105,8 +105,6 @@ export const listBucket = (id) => request('/api/bucket/' + encodeURIComponent(id
 
 export const probeVideo = (id) => request('/api/probe/' + encodeURIComponent(id))
 
-export const exportCuts = (payload) => request('/api/export', json('POST', payload))
-
 export const getPlaces = () => request('/api/places')
 
 export const deleteBucket = (id, unfile) =>
@@ -154,7 +152,6 @@ export const loadEdit = (id) => request('/api/edit/' + encodeURIComponent(id))
 
 export const saveEdit = (id, edit, extra) => request('/api/edit/' + encodeURIComponent(id), json('PUT', { edit, extra }))
 
-export const forgetEdit = (id) => request('/api/edit/' + encodeURIComponent(id), { method: 'DELETE' })
 
 // Exports run in the background; these start one, follow it, and stop it.
 export const exportStart = (payload) => request('/api/export', json('POST', { ...payload, async: true }))

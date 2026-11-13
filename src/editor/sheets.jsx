@@ -7,7 +7,7 @@ import { Choice } from './panels.jsx'
 import { Captions, Check, Download, Music } from '../icons.jsx'
 import {
   captionsStatus, deleteLook, exportJob, exportStart, exportStop, getState, installCaptions, listBucket, listLooks,
-  listMedia, pullAudio, saveLook, thumbUrl, transcribe, uploadMedia, videoUrl
+  listMedia, pullAudio, saveLook, thumbUrl, transcribe, uploadMedia
 } from '../api.js'
 
 export function useEscape (onClose, busy) {

@@ -323,7 +323,6 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
           ref={playerRef}
           item={current}
           src={videoUrl(current.id)}
-          nextSrc={queue[cursor + 1] ? videoUrl(queue[cursor + 1].id) : null}
           idle={hide}
         />
       ) : (

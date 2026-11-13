@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Thumb from './Thumb.jsx'
 import { Check, Close, Film, Plus } from './icons.jsx'
-import { createProject, deleteProject, listBucket, listMedia, thumbUrl, uploadMedia, videoUrl } from './api.js'
+import { createProject, deleteProject, listBucket, listMedia, thumbUrl, uploadMedia } from './api.js'
 
 const SHAPES = [['9:16', 'Tall', 'TikTok, Reels, Shorts'], ['1:1', 'Square', 'Instagram posts'], ['4:5', 'Portrait', 'Instagram feed'], ['16:9', 'Wide', 'YouTube']]
 

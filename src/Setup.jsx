@@ -117,6 +117,7 @@ export default function Setup ({ state, onState, onDone }) {
   }, [caps, pick])
 
   const ready = (k) => Boolean(caps?.models?.[k]?.ready)
+  const haveModels = Object.keys(MODELS).filter(ready).map((k) => MODELS[k].name).join(' and ')
   const progress = caps?.install && caps.install.total ? caps.install.received / caps.install.total : 0
 
   async function download () {
@@ -281,12 +282,9 @@ export default function Setup ({ state, onState, onDone }) {
                   </li>
                   <li>
                     <Check size={14} />
-                    <span>{(() => {
-                      const have = Object.keys(MODELS).filter(ready).map((k) => MODELS[k].name)
-                      return have.length
-                        ? <>Captions ready: <strong>{have.join(' and ')}</strong></>
-                        : <>Captions download the first time you use them</>
-                    })()}</span>
+                    <span>{haveModels
+                      ? <>Captions ready: <strong>{haveModels}</strong></>
+                      : 'Captions download the first time you use them'}</span>
                   </li>
                 </ul>
                 <div className="setup__rows">

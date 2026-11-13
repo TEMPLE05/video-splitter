@@ -134,7 +134,7 @@ export function mountPreviews (app, { CACHE_DIR, wrap, httpError, resolveInSourc
     const { key } = await locate(req.params.id)
     if (!ready.has(key)) throw httpError(404, 'No playable copy yet')
     res.set('Cache-Control', 'private, max-age=3600')
-    res.sendFile(fileOf(key))
+    res.sendFile(fileOf(key), { cacheControl: false })
   }))
 
   return { has }

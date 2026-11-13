@@ -143,12 +143,6 @@ export function locate (pieces, t) {
   return { index: 0, offset: 0, source: 0 }
 }
 
-/** Timeline time of a source moment inside a given piece. */
-export function timelineAt (pieces, index, source) {
-  const p = pieces[index]
-  return offsets(pieces)[index] + Math.min(Math.max(intoAt(p, source), 0), lengthOf(p))
-}
-
 /** Splits the piece under `t`. Null when the cut would leave a sliver. */
 export function splitAt (pieces, t, min) {
   const { index, source } = locate(pieces, t)

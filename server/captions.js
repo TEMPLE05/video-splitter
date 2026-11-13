@@ -20,10 +20,13 @@ import { spawn } from 'node:child_process'
  * and cut-out stretches are never transcribed at all.
  */
 
+// Each download is checked against the SHA-256 its publisher lists, so a
+// tampered or swapped file is thrown away instead of being run.
 const WHISPER_ZIP = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip'
+const WHISPER_SHA = '49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a'
 const MODELS = {
-  base: { label: 'Quick', file: 'ggml-base.bin', size: 147951465 },
-  small: { label: 'Better', file: 'ggml-small.bin', size: 487601967 }
+  base: { label: 'Quick', file: 'ggml-base.bin', size: 147951465, sha: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe' },
+  small: { label: 'Better', file: 'ggml-small.bin', size: 487601967, sha: '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b' }
 }
 const modelUrl = (m) => `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${m.file}`
 
@@ -75,20 +78,23 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
     try { return fs.statSync(modelPath(key)).size === MODELS[key].size } catch { return false }
   }
 
-  async function download (url, target, onBytes) {
+  async function download (url, target, sha, onBytes) {
     const res = await fetch(url, { redirect: 'follow' })
     if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`)
     const total = Number(res.headers.get('content-length')) || 0
     const part = target + '.part'
     const out = fs.createWriteStream(part)
+    const hash = crypto.createHash('sha256')
     let received = 0
     try {
       for await (const chunk of res.body) {
+        hash.update(chunk)
         received += chunk.length
         onBytes(received, total)
         if (!out.write(chunk)) await new Promise((r) => out.once('drain', r))
       }
       await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())))
+      if (hash.digest('hex') !== sha) throw new Error('The download did not match its published checksum, so it was thrown away. Try again')
     } catch (err) {
       out.destroy()
       await fsp.rm(part, { force: true })
@@ -115,7 +121,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       if (!isWin) throw new Error('Install whisper.cpp so that whisper-cli is on your PATH, then try again')
       install.phase = 'program'
       const zip = path.join(WDIR, 'whisper.zip')
-      await download(WHISPER_ZIP, zip, (r, t) => { install.received = r; install.total = t })
+      await download(WHISPER_ZIP, zip, WHISPER_SHA, (r, t) => { install.received = r; install.total = t })
       await unzip(zip, WDIR)
       await fsp.rm(zip, { force: true })
       if (!findCli()) throw new Error('The downloaded program did not contain whisper-cli')
@@ -124,7 +130,7 @@ export function mountCaptions (app, { ROOT, CACHE_DIR, wrap, httpError, resolveI
       install.phase = 'model'
       install.received = 0
       install.total = MODELS[key].size
-      await download(modelUrl(MODELS[key]), modelPath(key), (r, t) => { install.received = r; install.total = t || MODELS[key].size })
+      await download(modelUrl(MODELS[key]), modelPath(key), MODELS[key].sha, (r, t) => { install.received = r; install.total = t || MODELS[key].size })
       if (!modelReady(key)) throw new Error('The language model did not download completely; try again')
     }
   }

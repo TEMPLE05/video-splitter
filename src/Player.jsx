@@ -14,7 +14,7 @@ function formatTime (seconds) {
  * The video layer plus its transport. Keyboard handling lives in the Sorter so
  * there is one listener for the whole screen; it reaches in through the ref.
  */
-const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
+const Player = forwardRef(function Player ({ item, src, idle }, ref) {
   const videoRef = useRef(null)
   const [playing, setPlaying] = useState(false)
   const [muted, setMuted] = useState(true)
@@ -155,15 +155,6 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
           </span>
         </div>
       </div>
-
-      {/* Intended to warm the next clip, and worth knowing: it does nothing.
-          The element is display:none, and browsers skip preloading hidden media
-          whatever the attribute says. Measured both ways with a 52 MB clip
-          queued behind a small one and neither pulled a single byte. Kept at
-          metadata rather than auto so that if it is ever made visible it asks
-          for a header instead of a whole file, which would matter here because
-          the queue has full-length movies in it. */}
-      {nextSrc ? <video className="preload" src={nextSrc} preload="metadata" muted /> : null}
     </>
   )
 })

@@ -585,6 +585,11 @@ to the server's entry in `.mcp.json`.
 - Exports are written alongside the original, never over it.
 - Every path the server touches is checked to resolve inside the source
   folder.
+- The server listens on this computer only, and answers only its own window:
+  a request from another website's page, or from a site pretending to be
+  this address, is refused.
+- The captions program and language models are checked against their
+  publishers' SHA-256 checksums before they are used.
 
 ## Formats
 

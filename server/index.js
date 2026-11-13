@@ -280,6 +280,28 @@ async function snapshot () {
 /* ---------------------------------------------------------------------- app */
 
 const app = express()
+
+// Only this computer's own pages may talk to the app. It listens on
+// 127.0.0.1, but a web page open in the browser can still reach that address,
+// so every request is checked for where it came from:
+//  - the Host must be this app's own address, which stops a hostile site
+//    that re-points its own name at 127.0.0.1 (DNS rebinding) from reading
+//    your folders;
+//  - a request another site's page makes (the browser marks those with an
+//    Origin or Sec-Fetch-Site header) is refused, so no page can file,
+//    delete or upload behind your back.
+// Programs on this computer (the MCP server, scripts) send neither header.
+const OWN_HOSTS = new Set(['127.0.0.1:' + PORT, 'localhost:' + PORT])
+const DEV_ORIGINS = new Set(['http://localhost:5173', 'http://127.0.0.1:5173']) // vite, in npm run dev
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  const foreign = !OWN_HOSTS.has(String(req.headers.host || '').toLowerCase()) ||
+    (origin && !OWN_HOSTS.has(origin.replace(/^http:\/\//, '')) && !DEV_ORIGINS.has(origin)) ||
+    (req.path.startsWith('/api/') && req.headers['sec-fetch-site'] === 'cross-site' && !DEV_ORIGINS.has(origin))
+  if (foreign) { res.status(403).json({ error: 'Video Splitter only answers its own window' }); return }
+  res.set('X-Content-Type-Options', 'nosniff')
+  next()
+})
 // Exports carry the editor's text as pictures, which for an animated or
 // word-by-word captioned episode can run to a hundred megabytes.
 app.use(express.json({ limit: '512mb' }))
@@ -710,69 +732,16 @@ function sendStream (stream, res) {
   stream.pipe(res)
 }
 
+// Express's own sendFile does the work here. It answers byte ranges, which
+// is what makes the scrub bar work (without them the browser has to pull the
+// whole clip before it can seek), and it sends a validator, so stepping back
+// with B or undoing a filing does not re-pull a 20 MB clip.
 app.get('/api/video/:id', wrap(async (req, res) => {
-  const name = decodeId(req.params.id)
-  const file = resolveInSource(name)
-
-  let stat
-  try {
-    stat = await fsp.stat(file)
-  } catch {
-    throw httpError(404, 'That video is no longer there')
-  }
-
-  const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream'
-  const range = req.headers.range
-
-  // These clips run around 20 Mbps, so a single 8 second one is 20 MB. Without
-  // a validator the browser re-pulls all of it every time you step back with B
-  // or undo a filing. The tag covers size and modified time, so an edited or
-  // replaced file still invalidates correctly.
-  const stamp = stat.mtime.toUTCString()
-  const etag = 'W/"' + stat.size.toString(16) + '-' + stat.mtimeMs.toString(16) + '"'
-  res.set({
-    ETag: etag,
-    'Last-Modified': stamp,
-    'Cache-Control': 'private, max-age=3600'
-  })
-
-  const known = req.headers['if-none-match']
-  const since = req.headers['if-modified-since']
-  if (!range && ((known && known === etag) || (since && since === stamp))) {
-    res.status(304).end()
-    return
-  }
-
-  // Range support is what makes the scrub bar work. Without it the browser has
-  // to pull the whole clip down before it can seek.
-  if (range) {
-    const match = /bytes=(\d*)-(\d*)/.exec(range)
-    let start = match && match[1] ? parseInt(match[1], 10) : 0
-    let end = match && match[2] ? parseInt(match[2], 10) : stat.size - 1
-    if (Number.isNaN(start) || start < 0) start = 0
-    if (Number.isNaN(end) || end >= stat.size) end = stat.size - 1
-
-    if (start > end) {
-      res.status(416).set('Content-Range', 'bytes */' + stat.size).end()
-      return
-    }
-
-    res.status(206).set({
-      'Content-Range': 'bytes ' + start + '-' + end + '/' + stat.size,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': end - start + 1,
-      'Content-Type': type
-    })
-    sendStream(fs.createReadStream(file, { start, end }), res)
-    return
-  }
-
-  res.status(200).set({
-    'Content-Length': stat.size,
-    'Accept-Ranges': 'bytes',
-    'Content-Type': type
-  })
-  sendStream(fs.createReadStream(file), res)
+  const file = resolveInSource(decodeId(req.params.id))
+  if (!fs.existsSync(file)) throw httpError(404, 'That video is no longer there')
+  res.set('Cache-Control', 'private, max-age=3600')
+  res.type(MIME[path.extname(file).toLowerCase()] || 'application/octet-stream')
+  res.sendFile(file, { dotfiles: 'allow', cacheControl: false })
 }))
 
 app.post('/api/assign', wrap(async (req, res) => {

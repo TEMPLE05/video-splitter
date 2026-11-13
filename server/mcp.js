@@ -15,7 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import * as z from 'zod/v4'
-import { TRANSITIONS, initial, isImage, lengthOf, newId, speedsOf, speedFields, total } from '../src/editor/model.js'
+import { TRANSITIONS, initial, isImage, newId, speedsOf, speedFields, total } from '../src/editor/model.js'
 import { CAPTION_LOOK, FONTS, IN_ANIMS, LOOP_ANIMS, OUT_ANIMS, STYLES, captionChunks } from '../src/editor/text.js'
 
 const BASE = (process.env.VIDEOSPLITTER_URL || 'http://127.0.0.1:5174').replace(/\/+$/, '')
