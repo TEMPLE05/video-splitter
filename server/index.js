@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
 import { mountArrivals } from './arrivals.js'
+import { mountDupes } from './dupes.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
@@ -287,6 +288,13 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 app.get('/api/state', wrap(async (_req, res) => {
   res.json(await snapshot())
 }))
+
+// The same video already in a bucket, whatever its name: see server/dupes.js.
+const dupes = mountDupes(app, {
+  wrap, httpError, resolveInSource, decodeId, encodeId,
+  getConfig: () => config,
+  VIDEO_EXT
+})
 
 // New videos arriving in the folder (LocalSend, a cable, a copy) join the
 // queue while the app is open: see server/arrivals.js.
@@ -774,6 +782,16 @@ app.post('/api/assign', wrap(async (req, res) => {
   const name = decodeId(String(body.id))
   const from = resolveInSource(name)
   if (!fs.existsSync(from)) throw httpError(404, 'That video is no longer there')
+
+  // The same video already in that bucket, under any name, is not filed
+  // twice; the sorter offers to skip it or recycle this copy instead.
+  if (!body.force) {
+    const twin = (await dupes.find(from)).find((m) => m.bucketId === bucket.id)
+    if (twin) {
+      res.status(409).json({ error: 'Already in ' + bucket.name + ' as ' + twin.name + ', so this copy was not filed', duplicate: twin })
+      return
+    }
+  }
 
   const bucketDir = resolveInSource(bucket.name)
   await fsp.mkdir(bucketDir, { recursive: true })

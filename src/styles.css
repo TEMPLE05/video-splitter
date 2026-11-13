@@ -475,6 +475,58 @@ kbd {
 }
 .toast strong { color: var(--text); font-weight: 600; }
 .toast--arrived { padding-right: 16px; }
+
+/* The video on screen is already in a bucket: a note at the top, and that
+   bucket's bubble marked, so pressing it does nothing by surprise. */
+.dupe {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 7px 7px 7px 16px;
+  border: 1px solid rgba(255, 193, 77, 0.45);
+  border-radius: 999px;
+  background: var(--smoke);
+  box-shadow: var(--lift);
+  color: var(--dim);
+  font-size: 13px;
+  transform: translateX(-50%);
+  animation: slip 0.22s var(--ease);
+}
+.dupe > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dupe strong { color: #ffc14d; font-weight: 600; }
+.dupe em { color: var(--text); font-style: normal; }
+.dupe.is-nudged { animation: dupe-nudge 0.4s var(--ease); }
+@keyframes dupe-nudge {
+  0%, 100% { transform: translateX(-50%); }
+  25% { transform: translateX(calc(-50% - 6px)); }
+  75% { transform: translateX(calc(-50% + 6px)); }
+}
+.dupe__btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.dupe__btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.dupe__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dupe__btn kbd { min-width: 18px; height: 18px; padding: 0 5px; font-size: 10.5px; }
+.dupe__btn--bin:hover:not(:disabled) { background: rgba(242, 139, 130, 0.22); border-color: rgba(242, 139, 130, 0.5); }
+.bubblewrap.is-twin > .bubble { border-color: rgba(255, 193, 77, 0.6); box-shadow: var(--lift), 0 0 0 1px rgba(255, 193, 77, 0.25); }
+.bubblewrap.is-twin > .bubble .bubble__name::after { content: ' · has it'; color: #ffc14d; font-weight: 400; }
 .toast svg { color: var(--accent); flex: none; }
 .toast__undo {
   padding: 5px 13px;

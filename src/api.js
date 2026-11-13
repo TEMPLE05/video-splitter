@@ -20,6 +20,9 @@ const json = (method, data) => ({
 
 export const getState = () => request('/api/state')
 
+/** Bucket videos identical to this one, under any name. */
+export const findDupes = (id) => request('/api/dupes/' + encodeURIComponent(id))
+
 /** New videos arriving in the folder, as they land. Returns a function that stops listening. */
 export function onArrivals (onArrived, onHello) {
   const es = new EventSource('/api/events')

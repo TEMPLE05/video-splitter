@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Player from './Player.jsx'
 import { Back, Check, Close, Download, Folder, Grid, Help, Plus, Skip, Undo } from './icons.jsx'
 import ConfirmRemove from './ConfirmRemove.jsx'
-import { assign, createBucket, undo, videoUrl } from './api.js'
+import { assign, createBucket, findDupes, trashClips, undo, videoUrl } from './api.js'
 
 // Same natural order the server uses, with one shared collator rather than
 // localeCompare's options form, which rebuilds one per comparison.
@@ -75,6 +75,32 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
     return () => clearTimeout(t)
   }, [toast])
 
+  // Whether the video on screen is already in a bucket, under any name.
+  const [dupes, setDupes] = useState({ id: null, matches: [] })
+  const [nudge, setNudge] = useState(0)
+  useEffect(() => {
+    if (!current) return
+    let stale = false
+    const id = current.id
+    findDupes(id).then((r) => { if (!stale) setDupes({ id, matches: r.matches || [] }) }).catch(() => { if (!stale) setDupes({ id, matches: [] }) })
+    return () => { stale = true }
+  }, [current && current.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const twins = current && dupes.id === current.id ? dupes.matches : []
+  const twinIn = new Set(twins.map((m) => m.bucketId))
+
+  async function recycleCopy () {
+    if (!current) return
+    const item = current
+    try {
+      const r = await trashClips([item.id])
+      if (!r.trashed.length) throw new Error('Windows would not move it to the Recycle Bin')
+      onState((s) => ({ ...s, queue: s.queue.filter((q) => q.id !== item.id) }))
+      setToast({ recycled: item.name })
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   // New videos landed in the folder. They are slotted into the queue by
   // name, which can shift the one on screen, so the cursor follows it.
   const shown = useRef(null)
@@ -135,6 +161,8 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
    */
   async function fileInto (bucket) {
     if (!current || inFlight.current.has(current.id)) return
+    // Already in that bucket: it stays where it is and the note says so.
+    if (twinIn.has(bucket.id)) { setNudge((n) => n + 1); return }
     const item = current
     inFlight.current.add(item.id)
 
@@ -412,12 +440,12 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
         {matches.map((bucket) => {
           const i = state.buckets.indexOf(bucket)
           return (
-          <div className={'bubblewrap' + (chosen && chosen.id === bucket.id ? ' is-chosen' : '')} key={bucket.id}>
+          <div className={'bubblewrap' + (chosen && chosen.id === bucket.id ? ' is-chosen' : '') + (twinIn.has(bucket.id) ? ' is-twin' : '')} key={bucket.id}>
             <button
               className="bubble"
               onClick={() => fileInto(bucket)}
               disabled={!current}
-              title={'File into ' + bucket.name}
+              title={twinIn.has(bucket.id) ? 'This video is already in ' + bucket.name : 'File into ' + bucket.name}
             >
               {i < 9 ? <span className="bubble__key">{i + 1}</span> : null}
               <span className="bubble__name">{bucket.name}</span>
@@ -477,7 +505,24 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
         </div>
       ) : null}
 
-      {toast && toast.arrived ? (
+      {twins.length ? (
+        <div className={'dupe' + (nudge ? ' is-nudged' : '')} key={nudge} role="status">
+          <span>
+            Already in <strong>{twins[0].bucket}</strong>
+            {twins[0].name !== current.name ? <> as <em>{twins[0].name}</em></> : null}
+            {twins.length > 1 ? <> and {twins.length - 1} more</> : null}
+          </span>
+          <button className="dupe__btn" onClick={() => setCursor((c) => c + 1)} disabled={cursor >= queue.length - 1}>Skip <kbd>S</kbd></button>
+          <button className="dupe__btn dupe__btn--bin" onClick={recycleCopy}>Recycle this copy</button>
+        </div>
+      ) : null}
+
+      {toast && toast.recycled ? (
+        <div className="toast" role="status">
+          <Check size={15} />
+          <span>This copy went to the <strong>Recycle Bin</strong></span>
+        </div>
+      ) : toast && toast.arrived ? (
         <div className="toast toast--arrived" role="status">
           <Download size={15} />
           <span>{toast.arrived === 1

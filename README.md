@@ -169,6 +169,15 @@ buckets that match. The arrow keys choose between them and `Enter` files.
 Videos start muted, because browsers block autoplay with sound until you
 interact with the page. Press `M` once and sound stays on.
 
+### Duplicates
+
+When the video on screen is already in a bucket, under any name (a "(2)" or
+"copy" from saving it twice), a note at the top says where, and that bucket's
+bubble is marked "has it". Pressing that bucket does nothing, so it is never
+filed twice. Skip it with S, or press Recycle this copy to send this one to
+the Recycle Bin. It matches files that are identical; a copy that was
+re-encoded or re-downloaded with a different watermark is not caught.
+
 ### New videos while it is open
 
 Videos that land in the folder while the app is open, sent from your phone
@@ -613,6 +622,7 @@ server/library.js     Recycle Bin, moving clips between buckets, tidying up
 server/fonts.js       Fonts imported for text
 server/projects.js    Projects: videos started from pictures, kept in .edits/projects
 server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
+server/dupes.js       Finds the same video already in a bucket, whatever its name
 server/arrivals.js    Watches the folder so new videos join the queue as they land
 server/mcp.js         The app's actions as MCP tools, for Claude Code
 src/Projects.jsx      Project cards and the New project window
