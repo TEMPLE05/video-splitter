@@ -31,7 +31,7 @@ const SHORTCUTS = [
   ['?', 'This panel']
 ]
 
-export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLibrary }) {
+export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLibrary, onSetup }) {
   const [cursor, setCursor] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -575,6 +575,11 @@ export default function Sorter ({ state, onState, arrivals, onChangeFolder, onLi
               Video Splitter is open source. Ideas, bugs, or want to build on it together?{' '}
               <a href="https://github.com/TEMPLE05/video-splitter" target="_blank" rel="noreferrer">github.com/TEMPLE05/video-splitter</a>
             </p>
+            {onSetup ? (
+              <p className="sheet__about sheet__again">
+                <button type="button" onClick={() => { setHelpOpen(false); onSetup() }}>Open the set-up window again</button>
+              </p>
+            ) : null}
             <p className="sheet__foot" title={state.sourceDir}>{state.sourceDir}</p>
           </div>
         </div>

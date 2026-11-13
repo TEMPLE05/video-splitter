@@ -2133,6 +2133,9 @@ kbd {
 .sheet__about a { color: var(--dim); text-decoration: none; border-bottom: 1px solid rgba(255, 255, 255, 0.18); }
 .sheet__about a:hover { color: var(--text); border-color: var(--edge-hi); }
 .sheet__about + .sheet__foot { margin-top: 10px; padding-top: 0; border-top: 0; }
+.sheet__again { margin-top: 8px; padding-top: 0; border-top: 0; }
+.sheet__again button { padding: 0; border: 0; border-bottom: 1px solid rgba(255, 255, 255, 0.18); background: none; color: var(--dim); font: inherit; cursor: pointer; }
+.sheet__again button:hover { color: var(--text); border-color: var(--edge-hi); }
 
 .setup__choices { display: flex; flex-direction: column; gap: 10px; }
 .setup__choices .choice { flex-direction: row; align-items: center; gap: 14px; padding: 12px 16px; }

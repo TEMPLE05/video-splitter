@@ -175,6 +175,7 @@ export default function App () {
       arrivals={arrivals}
       onChangeFolder={() => setPicking(true)}
       onLibrary={() => setView({ name: 'library' })}
+      onSetup={() => setSetup(true)}
     />
   )
 }
