@@ -199,6 +199,11 @@ kbd {
 }
 .noplay__title { margin: 0 0 6px; color: var(--text); font-size: 15px; font-weight: 500; }
 .noplay__note { margin: 0; color: var(--faint); font-size: 13px; }
+.noplay__note--soft { margin-top: 10px; max-width: 340px; justify-self: center; font-size: 12px; opacity: 0.8; }
+.gate { position: fixed; inset: 0; display: grid; background: var(--bg, #000); }
+.gate__back { position: absolute; top: 16px; left: 16px; z-index: 2; }
+.noplay__bar { width: min(280px, 70vw); height: 4px; margin: 6px auto 10px; overflow: hidden; border-radius: 2px; background: rgba(255, 255, 255, 0.1); }
+.noplay__bar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s; }
 
 /* ------------------------------------------------------- sorting progress */
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Sorter from './Sorter.jsx'
 import Library from './Library.jsx'
+import CopyGate from './CopyGate.jsx'
 import Editor from './Editor.jsx'
 import SourcePicker from './SourcePicker.jsx'
 import Setup from './Setup.jsx'
@@ -143,7 +144,7 @@ export default function App () {
   }
 
   if (view.name === 'edit') {
-    return (
+    const editor = (
       <Editor
         key={view.project ? 'p' + view.project.id : view.video.id}
         video={view.video}
@@ -151,6 +152,12 @@ export default function App () {
         bucket={view.bucket}
         onBack={() => setView({ name: 'library' })}
       />
+    )
+    if (view.project) return editor
+    return (
+      <CopyGate key={view.video.id} video={view.video} onBack={() => setView({ name: 'library' })}>
+        {editor}
+      </CopyGate>
     )
   }
 

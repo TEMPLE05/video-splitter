@@ -108,7 +108,7 @@ export function NewProjectSheet ({ buckets, bucketId, onCreated, onCancel }) {
         if (cancelled) return
         setMedia([
           ...im.files.map((f) => ({ kind: 'image', id: f.id, name: f.name })),
-          ...b.videos.filter((v) => v.playable).map((v) => ({ kind: 'clip', id: v.id, name: v.name }))
+          ...b.videos.filter((v) => v.playable || v.preview).map((v) => ({ kind: 'clip', id: v.id, name: v.name }))
         ])
       })
     return () => { cancelled = true }

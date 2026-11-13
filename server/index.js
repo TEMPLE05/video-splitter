@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { mountCaptions } from './captions.js'
 import { mountArrivals } from './arrivals.js'
 import { mountDupes } from './dupes.js'
+import { mountPreviews } from './previews.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
@@ -940,6 +941,7 @@ app.get('/api/bucket/:id', wrap(async (req, res) => {
         size: st.size,
         ext,
         playable: PLAYABLE_EXT.has(ext),
+        preview: previews.has(path.join(dir, entry.name), st),
         edited: savedEdits.has(path.join(dir, entry.name))
       }
     } catch {
@@ -972,6 +974,9 @@ app.get('/api/bucket/:id', wrap(async (req, res) => {
 // a bucket or get swept along by anything that moves files around.
 const CACHE_DIR = process.env.VIDEOSPLITTER_CACHE || path.join(ROOT, '.cache')
 const THUMB_DIR = path.join(CACHE_DIR, 'thumbs')
+
+// Playable copies of videos the browser cannot play: see server/previews.js.
+const previews = mountPreviews(app, { CACHE_DIR, wrap, httpError, resolveInSource, decodeId, haveTools })
 
 // Runs at most `max` jobs at once and queues the rest.
 function limiter (max) {

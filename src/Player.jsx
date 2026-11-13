@@ -1,5 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Pause, Play, Replay, VolumeOff, VolumeOn } from './icons.jsx'
+import { hasCopy, videoUrl, waitForCopy } from './api.js'
+import MakingCopy from './MakingCopy.jsx'
 
 function formatTime (seconds) {
   if (!Number.isFinite(seconds)) return '0:00'
@@ -20,6 +22,8 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
   const [duration, setDuration] = useState(0)
   const [failed, setFailed] = useState(false)
   const [scrubbing, setScrubbing] = useState(false)
+  // A video this browser cannot play gets a playable copy made for it.
+  const [copy, setCopy] = useState(null) // { id, ready, status, error }
 
   // New clip: reset the transport so the previous clip's time never leaks in.
   useEffect(() => {
@@ -27,6 +31,19 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
     setDuration(0)
     setFailed(false)
   }, [src])
+
+  const id = item ? item.id : null
+  const copyReady = Boolean(id && (hasCopy(id) || (copy && copy.id === id && copy.ready)))
+  const needCopy = Boolean(item && (!item.playable || failed) && !copyReady)
+  useEffect(() => {
+    if (!needCopy) return
+    let stale = false
+    setCopy({ id, status: null })
+    waitForCopy(id, (status) => setCopy({ id, status }), () => stale)
+      .then((ok) => { if (ok && !stale) { setFailed(false); setCopy({ id, ready: true }) } })
+      .catch((err) => { if (!stale) setCopy({ id, error: err.message }) })
+    return () => { stale = true }
+  }, [id, needCopy]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggle () {
     const v = videoRef.current
@@ -68,23 +85,24 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
   if (!item) return null
 
   const percent = duration > 0 ? (time / duration) * 100 : 0
-  const disabled = !item.playable || failed
+  const disabled = needCopy || (copyReady && failed)
+  const playSrc = copyReady ? videoUrl(item.id) : src
 
   return (
     <>
       <div className="videolayer" onClick={disabled ? undefined : toggle}>
         {disabled ? (
-          <div className="noplay">
-            <p className="noplay__title">No preview for {item.ext}</p>
-            <p className="noplay__note">
-              The browser cannot decode this format. You can still file it.
-            </p>
-          </div>
+          <MakingCopy
+            ext={item.ext}
+            status={copy && copy.id === item.id ? copy.status : null}
+            error={copyReady && failed ? 'Even the playable copy would not play.' : copy && copy.id === item.id ? copy.error : null}
+            note="You can file it without waiting."
+          />
         ) : (
           <video
             ref={videoRef}
             className="videolayer__el"
-            src={src}
+            src={playSrc}
             autoPlay
             loop
             // Browsers block autoplay with sound until the page is interacted
@@ -94,7 +112,12 @@ const Player = forwardRef(function Player ({ item, src, nextSrc, idle }, ref) {
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onTimeUpdate={(e) => !scrubbing && setTime(e.currentTarget.currentTime)}
-            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+            onLoadedMetadata={(e) => {
+              setDuration(e.currentTarget.duration)
+              // The sound plays but the picture cannot be decoded (HEVC
+              // without the decoder): treat it as not playable.
+              if (e.currentTarget.videoWidth === 0) setFailed(true)
+            }}
             onError={() => setFailed(true)}
           />
         )}

@@ -42,9 +42,62 @@ export const assign = (id, bucketId) => request('/api/assign', json('POST', { id
 
 export const undo = () => request('/api/undo', { method: 'POST' })
 
-export const videoUrl = (id) => '/api/video/' + encodeURIComponent(id)
+// Videos the browser cannot play get a playable copy (server/previews.js).
+// Once one is known, videoUrl hands out the copy instead, so every player in
+// the app picks it up. Exports read the original on the server regardless.
+const withCopy = new Set()
+export const hasCopy = (id) => withCopy.has(id)
 
-export const listBucket = (id) => request('/api/bucket/' + encodeURIComponent(id))
+export const videoUrl = (id) => (withCopy.has(id) ? '/api/preview/' : '/api/video/') + encodeURIComponent(id)
+
+export const previewStatus = (id) => request('/api/preview/' + encodeURIComponent(id) + '/status')
+export const makePreview = (id) => request('/api/preview/' + encodeURIComponent(id), { method: 'POST' })
+
+/**
+ * Makes (or finds) the playable copy and waits for it, reporting progress on
+ * the way. Resolves false if `isStale()` turns true while waiting.
+ */
+export async function waitForCopy (id, onProgress, isStale) {
+  let s = await makePreview(id)
+  while (s.state !== 'ready') {
+    if (s.state === 'failed') throw new Error(s.error || 'Could not make a playable copy')
+    if (isStale && isStale()) return false
+    onProgress && onProgress(s)
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    if (isStale && isStale()) return false
+    s = await previewStatus(id)
+  }
+  withCopy.add(id)
+  return true
+}
+
+/**
+ * Whether this browser can actually show the picture of a video. A file type
+ * it knows can still hold a picture format it cannot decode (HEVC without the
+ * Windows extension): then it errors, or plays the sound over nothing.
+ */
+const playsHere = new Map()
+export function canPlayHere (id) {
+  if (withCopy.has(id)) return Promise.resolve(true)
+  if (playsHere.has(id)) return playsHere.get(id)
+  const p = new Promise((resolve) => {
+    const v = document.createElement('video')
+    v.muted = true
+    v.preload = 'metadata'
+    const done = (ok) => { clearTimeout(t); v.removeAttribute('src'); v.load(); resolve(ok) }
+    const t = setTimeout(() => done(true), 8000)
+    v.addEventListener('loadedmetadata', () => done(v.videoWidth > 0), { once: true })
+    v.addEventListener('error', () => done(false), { once: true })
+    v.src = '/api/video/' + encodeURIComponent(id)
+  })
+  playsHere.set(id, p)
+  return p
+}
+
+export const listBucket = (id) => request('/api/bucket/' + encodeURIComponent(id)).then((d) => {
+  for (const v of (d && d.videos) || []) if (v.preview) withCopy.add(v.id)
+  return d
+})
 
 export const probeVideo = (id) => request('/api/probe/' + encodeURIComponent(id))
 

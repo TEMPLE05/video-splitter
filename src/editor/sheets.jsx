@@ -416,7 +416,7 @@ export function ClipSheet ({ bucket, mainId, onPick, onClose }) {
     let cancelled = false
     setVideos(null)
     listBucket(from)
-      .then((d) => { if (!cancelled) setVideos(d.videos.filter((v) => v.playable)) })
+      .then((d) => { if (!cancelled) setVideos(d.videos.filter((v) => v.playable || v.preview)) })
       .catch((err) => { if (!cancelled) { setVideos([]); setError(err.message) } })
     return () => { cancelled = true }
   }, [from])

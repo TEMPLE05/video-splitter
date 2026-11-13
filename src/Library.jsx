@@ -63,7 +63,7 @@ function Card ({ video, onOpen, selected, selecting, onSelect }) {
             src={thumbUrl(video.id)}
             fallback={<span className="card__noplay">{video.ext}</span>}
           />
-          {preview && video.playable && !selecting ? (
+          {preview && (video.playable || video.preview) && !selecting ? (
             <video
               className="card__video"
               src={videoUrl(video.id)}

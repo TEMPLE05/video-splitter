@@ -588,9 +588,13 @@ to the server's entry in `.mcp.json`.
 
 ## Formats
 
-`.mp4`, `.m4v`, `.mov` and `.webm` preview in the browser. `.mkv` and `.avi`
-appear in the queue and can still be filed, but show a placeholder instead of
-a preview, because browsers cannot decode them.
+`.mp4`, `.m4v`, `.mov` and `.webm` play in the browser as they are. `.mkv` and
+`.avi`, and HEVC phone videos on a computer without the HEVC decoder, get a
+playable copy the first time they are opened, in the sorter or the editor,
+with a progress bar. When the picture inside is already H.264 the copy is
+just repackaged and takes seconds; otherwise it is re-encoded at up to 720p.
+Copies live in `.cache/previews`, never beside your videos, and are found
+again after a video is filed. Exports always read the original file.
 
 ## Configuration
 
@@ -624,6 +628,7 @@ server/projects.js    Projects: videos started from pictures, kept in .edits/pro
 server/speed.js       Speed and slow-then-fast ramps for the picture and the sound
 server/dupes.js       Finds the same video already in a bucket, whatever its name
 server/arrivals.js    Watches the folder so new videos join the queue as they land
+server/previews.js    Playable copies of videos the browser cannot play
 server/mcp.js         The app's actions as MCP tools, for Claude Code
 src/Projects.jsx      Project cards and the New project window
 src/App.jsx           Switches between sorting, library and editor
