@@ -139,6 +139,8 @@ export default function Setup ({ state, onState, onDone }) {
           <div className="setup__art" />
           {photo ? <img className="setup__photo" src="/api/brand/picture" alt="" onError={() => setPhoto(false)} /> : null}
           <div className="setup__scrim" />
+          {/* Goes with the picture in assets/setup.jpg; change it if the picture changes. */}
+          {photo ? <small className="setup__credit">Photo of Lionel Messi. Video Splitter is not affiliated with or endorsed by him.</small> : null}
           {sound ? <audio ref={soundRef} src="/api/brand/sound" preload="auto" onError={() => setSound(false)} /> : null}
           {sound ? (
             <button className="ctl setup__sound" onClick={toggleMute} aria-label={muted ? 'Sound is off' : 'Sound is on'} title={muted ? 'Turn the sound on' : 'Turn the sound off'}>

@@ -648,3 +648,8 @@ src/icons.jsx         Inline SVG icon set
 src/api.js            Fetch wrappers
 src/styles.css        All styling
 ```
+
+## Credits
+
+The photo in the set-up window shows Lionel Messi. Video Splitter is a personal,
+free project and is not affiliated with, sponsored by or endorsed by Lionel Messi.
