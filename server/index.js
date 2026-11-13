@@ -10,6 +10,7 @@ import { mountCaptions } from './captions.js'
 import { mountArrivals } from './arrivals.js'
 import { mountDupes } from './dupes.js'
 import { mountPreviews } from './previews.js'
+import { mountLocalSend } from './localsend.js'
 import { mountEdits } from './edits.js'
 import { OTHER_FILES, mountLibrary } from './library.js'
 import { mountFonts } from './fonts.js'
@@ -328,6 +329,17 @@ const arrivals = mountArrivals(app, {
 })
 
 const isVideoName = (n) => VIDEO_EXT.has(path.extname(n).toLowerCase())
+
+// Videos sent from a phone with LocalSend, over the Wi-Fi: see server/localsend.js.
+mountLocalSend(app, {
+  ROOT, wrap, httpError,
+  getConfig: () => config,
+  saveConfig,
+  getSourceDir: () => config.sourceDir,
+  isVideoName,
+  uniquePath,
+  emit: (event, data) => arrivals.send(event, data)
+})
 
 async function countVideos (dir) {
   try {

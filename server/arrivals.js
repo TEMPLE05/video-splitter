@@ -17,6 +17,7 @@ import path from 'node:path'
  *   hello                          on every connection, so the app can catch
  *                                  up after the server restarts
  *   arrived  { items: [entry] }    new videos for the queue
+ *   phone    { ...status }         receiving from a phone (server/localsend.js)
  */
 const SETTLE_MS = 1200 // a file's size must hold this long
 const GATHER_MS = 1500 // arrivals within this window go out together
@@ -113,5 +114,5 @@ export function mountArrivals (app, { getSourceDir, isVideoName, queueEntry }) {
   })
 
   rewatch()
-  return { rewatch }
+  return { rewatch, send }
 }
