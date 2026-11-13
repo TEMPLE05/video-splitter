@@ -2080,25 +2080,25 @@ kbd {
   background-size: cover;
   background-position: center;
 }
-/* The picture sits in the lower left, over the gradient and under the name,
-   melting into the gradient along its top and right edges. */
+/* The picture stands in the lower left, over the gradient and under the
+   name. It is a cut-out with a see-through background, so it is shown whole
+   and only its right edge melts into the gradient. */
 .setup__photo {
   position: absolute;
   left: 0;
   bottom: 0;
-  width: 88%;
-  height: 62%;
-  object-fit: cover;
-  object-position: top center;
-  -webkit-mask-image: linear-gradient(to top, #000 55%, transparent), linear-gradient(to right, #000 72%, transparent);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(to top, #000 55%, transparent), linear-gradient(to right, #000 72%, transparent);
-  mask-composite: intersect;
+  width: 125%;
+  height: 88%;
+  object-fit: contain;
+  object-position: left bottom;
+  -webkit-mask-image: linear-gradient(to right, #000 62%, transparent 82%);
+  mask-image: linear-gradient(to right, #000 62%, transparent 82%);
 }
+/* Just enough shade under the name to read it, without hiding the picture. */
 .setup__scrim {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.88), rgba(0, 0, 0, 0.3) 40%, transparent 68%);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.35) 22%, transparent 40%);
   pointer-events: none;
 }
 .setup__sound { position: absolute; top: 14px; right: 14px; z-index: 2; }
@@ -2189,6 +2189,9 @@ kbd {
   .setup__brand { flex-direction: row; align-items: center; gap: 12px; bottom: 16px; }
   .setup__brand img { margin: 0; }
   .setup__brand span { display: none; }
+  /* In the short band on top, the picture stands at the right end instead. */
+  .setup__photo { left: auto; right: 0; width: auto; max-width: 46%; height: 100%; object-position: right bottom; -webkit-mask-image: linear-gradient(to left, #000 55%, transparent); mask-image: linear-gradient(to left, #000 55%, transparent); }
+  .setup__credit { right: 46%; }
   .setup__main { padding: 18px 20px 16px; }
   .setup__steps { gap: 12px; margin-bottom: 16px; }
   .setup__title { font-size: 20px; }

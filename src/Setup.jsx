@@ -62,9 +62,13 @@ export default function Setup ({ state, onState, onDone }) {
 
   // The sound plays as the window opens where the browser allows it (the
   // installed app does); elsewhere it waits for the first press.
+  // It plays once, a little under full volume: it is loud as recorded.
+  const played = useRef(false)
   function chime () {
     const a = soundRef.current
-    if (a && sound && !muted && a.paused) a.play().catch(() => { /* needs a press first */ })
+    if (!a || !sound || muted || !a.paused || played.current) return
+    a.volume = 0.6
+    a.play().then(() => { played.current = true }).catch(() => { /* needs a press first */ })
   }
   useEffect(() => { chime() }, [sound]) // eslint-disable-line react-hooks/exhaustive-deps
 
