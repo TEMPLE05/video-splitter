@@ -2108,7 +2108,9 @@ kbd {
 .setup__brand strong { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .setup__brand span { color: var(--dim); font-size: 13px; line-height: 1.5; }
 
-.setup__main { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 26px 30px 22px; }
+.setup__main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 26px 30px 22px; }
+.setup__close { position: absolute; top: 16px; right: 16px; z-index: 2; }
+.setup__close + .setup__steps { padding-right: 44px; }
 .setup__steps { display: flex; flex-wrap: wrap; gap: 18px; margin: 0 0 22px; padding: 0; list-style: none; color: var(--faint); font-size: 12.5px; }
 .setup__steps li { display: flex; align-items: center; gap: 8px; }
 .setup__steps li.is-done { color: var(--dim); }

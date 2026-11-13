@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import SourcePicker from './SourcePicker.jsx'
-import { Back, Captions, Check, Download, Film, Folder, Lock, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
+import { Back, Captions, Check, Close, Download, Film, Folder, Lock, Replay, Scissors, VolumeOff, VolumeOn } from './icons.jsx'
 import { captionsStatus, getStartup, installCaptions, setStartup as saveStartup } from './api.js'
 
 const STEPS = ['Welcome', 'Videos', 'Captions', 'Finish']
@@ -34,6 +34,16 @@ export default function Setup ({ state, onState, onDone }) {
   const [playing, setPlaying] = useState(false)
   const installPrompt = window.__installPrompt || null
   const standalone = window.matchMedia('(display-mode: standalone)').matches
+
+  // Once a videos folder is chosen the window can be closed at any step
+  // (the X, or Escape); on the very first run there is nothing to go back to.
+  const canClose = Boolean(state.sourceDir)
+  useEffect(() => {
+    if (!canClose) return
+    const onKey = (e) => { if (e.key === 'Escape') onDone() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [canClose, onDone])
 
   // The captions download, while one runs, is watched until it is done.
   useEffect(() => {
@@ -176,6 +186,11 @@ export default function Setup ({ state, onState, onDone }) {
         </aside>
 
         <section className="setup__main">
+          {canClose ? (
+            <button className="ctl setup__close" onClick={onDone} aria-label="Close the set-up window" title="Close (Esc)">
+              <Close size={18} />
+            </button>
+          ) : null}
           <ol className="setup__steps" aria-label="Set-up steps">
             {STEPS.map((s, i) => (
               <li key={s} className={i === step ? 'is-on' : i < step ? 'is-done' : ''}>
