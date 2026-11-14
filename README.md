@@ -667,3 +667,9 @@ src/styles.css        All styling
 
 The photo in the set-up window shows Lionel Messi. Video Splitter is a personal,
 free project and is not affiliated with, sponsored by or endorsed by Lionel Messi.
+
+Receiving from a phone speaks the open [LocalSend protocol](https://github.com/localsend/protocol),
+which is published for anyone to implement. The code here was written for this
+project and contains none of LocalSend's code. Video Splitter is not affiliated
+with or endorsed by LocalSend; it is simply compatible with the free LocalSend
+app on your phone.
