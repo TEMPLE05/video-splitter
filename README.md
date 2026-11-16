@@ -169,6 +169,10 @@ Play). No cable, no internet, and no LocalSend needed on the PC.
 - Nothing arrives until you accept it. **Always accept from this phone** skips
   the question for that phone from then on; the phone button's panel lists
   those phones and can forget them.
+- LocalSend sends copies; nothing can delete the originals on the phone. When a send
+  ends, a note says whether every video arrived whole (then it is safe to delete
+  them from the phone yourself) or names the ones that did not, to keep and send
+  again.
 - Only videos are taken. Photos and other files in the same send are left
   out, and the question says how many.
 - A name already in the folder becomes `clip (2).mp4`; nothing is

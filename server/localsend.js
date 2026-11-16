@@ -308,7 +308,9 @@ export function mountLocalSend (app, { ROOT, wrap, httpError, getConfig, saveCon
     clearTimeout(s.idle)
     session = null
     for (const f of s.files.values()) if (f.abort) f.abort()
-    last = { kind: how, from: s.alias, done: s.done, failed: s.failed + [...s.files.values()].filter((f) => f.status === 'waiting').length, skipped: s.skipped }
+    // Every file that is not safely saved: failed, never sent, or cut off.
+    const missing = [...s.files.values()].filter((f) => f.status !== 'done').map((f) => f.name)
+    last = { kind: how, from: s.alias, count: s.files.size, done: s.done, failed: missing.length, missing: missing.slice(0, 5), skipped: s.skipped }
     changed(true)
   }
 

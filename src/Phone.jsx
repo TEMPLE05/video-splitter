@@ -162,16 +162,42 @@ function PhoneResult ({ last }) {
     if (!key || key === seen.current) return
     seen.current = key
     setShown(last)
+    // The note about deleting from the phone stays until you close it.
+    const keep = last.kind === 'finished' || last.kind === 'cancelled' || last.kind === 'stalled'
+    if (keep) return undefined
     const t = setTimeout(() => setShown(null), 7000)
     return () => clearTimeout(t)
   }, [last])
   if (!shown) return null
   const { kind, from } = shown
+  const close = <button className="ctl" onClick={() => setShown(null)} aria-label="Close"><Close size={15} /></button>
+  if (kind === 'finished' && !shown.failed) {
+    return (
+      <div className="phonebar phonebar--safe" role="status">
+        <Check size={16} />
+        <div className="phonebar__text">
+          <span><strong>{videos(shown.done)}</strong> arrived from {from} and {shown.done === 1 ? 'is' : 'are'} saved on this PC.</span>
+          <span>You can delete {shown.done === 1 ? 'it' : 'them'} from your phone now.{shown.skipped ? ` The ${shown.skipped} other ${shown.skipped === 1 ? 'file was' : 'files were'} not taken, so keep ${shown.skipped === 1 ? 'it' : 'them'}.` : ''}</span>
+        </div>
+        {close}
+      </div>
+    )
+  }
+  if (kind === 'finished' || kind === 'cancelled' || kind === 'stalled') {
+    const lead = kind === 'finished' ? '' : kind === 'stalled' ? 'The phone stopped sending. ' : 'Stopped. '
+    return (
+      <div className="phonebar phonebar--safe phonebar--warn" role="status">
+        <div className="phonebar__text">
+          <span>{lead}<strong>{videos(shown.done)}</strong> arrived{shown.failed ? `, ${shown.failed} did not` : ''}.</span>
+          {shown.failed ? <span>Keep {shown.failed === 1 ? 'this one' : 'these'} on your phone and send {shown.failed === 1 ? 'it' : 'them'} again: {shown.missing.join(', ')}{shown.failed > shown.missing.length ? ` and ${shown.failed - shown.missing.length} more` : ''}.</span> : null}
+          {shown.done ? <span>The {shown.done === 1 ? 'one that arrived is' : 'ones that arrived are'} safe to delete from the phone.</span> : null}
+        </div>
+        {close}
+      </div>
+    )
+  }
   let text
-  if (kind === 'finished' && !shown.failed) text = <><Check size={15} /> <span><strong>{videos(shown.done)}</strong> arrived from {from}</span></>
-  else if (kind === 'finished' || kind === 'cancelled' || kind === 'stalled') {
-    text = <span>{kind === 'finished' ? '' : kind === 'stalled' ? 'The phone stopped sending. ' : 'Stopped. '}<strong>{videos(shown.done)}</strong> arrived{shown.failed ? `, ${shown.failed} did not` : ''}</span>
-  } else if (kind === 'no-videos') text = <span>{from} sent no videos, so nothing was taken</span>
+  if (kind === 'no-videos') text = <span>{from} sent no videos, so nothing was taken</span>
   else if (kind === 'no-room') text = <span>Not enough space on the disk for {sizeOf(shown.bytes)} from {from}</span>
   else if (kind === 'no-folder') text = <span>Choose a videos folder first, then send again</span>
   else return null

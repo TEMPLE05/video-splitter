@@ -2245,3 +2245,8 @@ kbd {
 .phonebar__bar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.4s; }
 .phonebar--done { width: auto; max-width: calc(100vw - 32px); padding: 10px 16px; border-radius: 999px; }
 .phonebar--done svg { flex: none; color: #81c995; }
+.phonebar--safe { align-items: flex-start; }
+.phonebar--safe > svg { margin-top: 2px; color: #81c995; }
+.phonebar--safe .phonebar__text span { white-space: normal; }
+.phonebar--safe .phonebar__text span:first-child { color: var(--text); }
+.phonebar--warn { border-color: rgba(255, 193, 77, 0.45); }
